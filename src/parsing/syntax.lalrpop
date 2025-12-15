@@ -1,0 +1,56 @@
+use crate::reprs::ast::*;
+
+grammar();
+
+extern {
+    type Error = crate::parsing::UserParserError;
+}
+
+match {
+    r"\s*" => {},
+    r"//[^\n\r]*[\n\r]*" => {},
+} else {
+    _
+}
+
+Ident: Ident<'input> = <r"[a-zA-Z]+"> => Ident { name: <> };
+
+Box<T>: Box<T> = <T> => Box::new(<>);
+
+pub Term: Term<'input> = {
+    #[precedence(level="2")]
+    "\\" <arg:AbsArg> ":" <arg_type:Type> <body:Box<Term>> => Term::Abs(Abs { arg, arg_type, body }),
+
+    #[precedence(level="1")]
+    #[assoc(side="left")]
+    <func:Box<Term>> <arg:Box<Term>> => Term::App(App { func, arg }),
+
+    #[precedence(level="0")]
+    <SimpleTerm>,
+};
+
+SimpleTerm: Term<'input> = {
+    "(" <Term> ")",
+
+    <ident:Ident> =>? {
+        Ok(Term::Var(Var { ident }))
+    },
+
+    "true" => Term::Bool(true),
+    "false" => Term::Bool(false),
+}
+
+AbsArg: Ident<'input> = Ident;
+
+Type: Type = {
+    #[precedence(level="1")]
+    #[assoc(side="right")]
+    <arg:Box<Type>> "->" <result:Box<Type>> => Type::Arr(Arr { arg, result }),
+
+    #[precedence(level="0")]
+    SimpleType,
+}
+SimpleType: Type = {
+    "(" <Type> ")",
+    "bool" => Type::Bool,
+}

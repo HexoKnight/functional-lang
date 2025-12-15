@@ -1,6 +1,25 @@
 [package]
-name = "FYP-functional-lang"
+name = "functional_lang"
 version = "0.1.0"
 edition = "2024"
+default-run = "funclang"
+
+[[bin]]
+name = "funclang"
+path = "src/bin/mod.rs"
+required-features = [ "binary" ]
+
+[features]
+default = []
+binary = ["dep:clap", "dep:clio"]
 
 [dependencies]
+clap = { version = "4.5.53", optional = true, features = ["derive"] }
+clio = { version = "0.3.5", optional = true, features = ["clap-parse"] }
+lalrpop-util = { version = "0.22.2", features = ["lexer"] }
+
+[dev-dependencies]
+pretty_assertions = "1.4.1"
+
+[build-dependencies]
+lalrpop = "0.22.2"
