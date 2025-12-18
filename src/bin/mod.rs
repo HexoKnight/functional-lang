@@ -42,9 +42,9 @@ fn validate(input: &str) -> Result<fl::reprs::untyped_ir::Term<'_>, String> {
     fl::validation::validate(&ast).map_err(|e| format!("validation error: {e}"))
 }
 
-fn type_check(input: &str) -> Result<(), String> {
+fn type_check(input: &str) -> Result<(fl::reprs::typed_ir::Term<'_>, String), String> {
     let untyped_ir = validate(input)?;
-    todo!()
+    fl::typing::type_check(&untyped_ir).map_err(|e| format!("typing error: {e}"))
 }
 
 fn evaluate(input: &str) -> Result<(), String> {
