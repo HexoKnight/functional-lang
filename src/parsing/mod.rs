@@ -2,7 +2,11 @@ use lalrpop_util::lalrpop_mod;
 
 use crate::reprs::ast::Term;
 
-lalrpop_mod!(syntax, "/parsing/syntax.rs");
+lalrpop_mod!(
+    #[allow(clippy::pedantic)]
+    syntax,
+    "/parsing/syntax.rs"
+);
 
 type ParseError<'i> =
     lalrpop_util::ParseError<usize, lalrpop_util::lexer::Token<'i>, UserParserError>;
@@ -14,10 +18,6 @@ pub struct Parser {
     term_parser: syntax::TermParser,
 }
 impl Parser {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn parse<'i>(&self, input: &'i str) -> Result<Term<'i>, ParseError<'i>> {
         self.term_parser.parse(input)
     }
@@ -31,7 +31,7 @@ pub mod tests {
 
     #[track_caller]
     pub(crate) fn parse_success(src: &str) -> Term<'_> {
-        match Parser::new().parse(src) {
+        match Parser::default().parse(src) {
             Ok(o) => o,
             Err(e) => panic!("parse failure:\n'{}'\n{}", src, e),
         }
@@ -39,7 +39,7 @@ pub mod tests {
 
     #[track_caller]
     pub(crate) fn parse_failure(src: &'_ str) -> ParseError<'_> {
-        match Parser::new().parse(src) {
+        match Parser::default().parse(src) {
             Ok(o) => panic!("parse success:\n'{}'\n{:#?}", src, o),
             Err(e) => e,
         }

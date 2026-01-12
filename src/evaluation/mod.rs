@@ -10,9 +10,7 @@ pub use self::context::ContextClosure;
 mod context {
     use typed_arena::Arena;
 
-    use crate::reprs::value;
-
-    type Value<'i, 'ir, 'a> = value::Value<'i, value::Abs<'i, 'ir, 'a>>;
+    use super::Value;
 
     // due to self references and dropck, this type must (transitively) have a 'safe' drop impl ie.:
     // - an automatic impl
@@ -28,6 +26,7 @@ mod context {
         var_stack: Stack<&'a Value<'i, 'ir, 'a>>,
     }
 
+    #[must_use]
     #[derive(Clone)]
     pub(super) struct Context<'i, 'ir, 'a> {
         var_arena: &'a Arena<Value<'i, 'ir, 'a>>,
@@ -49,7 +48,7 @@ mod context {
         }
 
         pub(super) fn get_var(&self, index: usize) -> Option<&'a Value<'i, 'ir, 'a>> {
-            self.var_stack.iter().cloned::<&_>().nth_back(index)
+            self.var_stack.iter().copied::<&_>().nth_back(index)
         }
 
         // TODO: perhaps try to close only over referenced vars
@@ -73,7 +72,7 @@ type Value<'i, 'ir, 'a> = value::Value<'i, Abs<'i, 'ir, 'a>>;
 
 type EvaluationError = String;
 
-trait Evaluate<'i: 'ir, 'ir: 'a, 'a> {
+trait Evaluate<'i, 'ir, 'a> {
     type Evaluated;
 
     fn evaluate(&'ir self, ctx: &Context<'i, 'ir, 'a>) -> Result<Self::Evaluated, EvaluationError>;

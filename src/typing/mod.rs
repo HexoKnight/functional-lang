@@ -38,6 +38,7 @@ mod context {
         }
     }
 
+    #[must_use]
     #[derive(Clone)]
     pub(super) struct Context<'a, 'inn> {
         inner: &'inn ContextInner<'a>,
@@ -63,7 +64,7 @@ mod context {
         }
 
         pub(super) fn get_var_ty(&self, index: usize) -> Option<&'a Type<'a>> {
-            self.var_ty_stack.iter().cloned::<&_>().nth_back(index)
+            self.var_ty_stack.iter().copied::<&_>().nth_back(index)
         }
     }
 }
@@ -144,15 +145,14 @@ impl<'i, 'a> TypeCheck<'i, 'a> for uir::Term<'i> {
                             // TODO
                             return Err(format!(
                                 "incorrect arg type:\n\
-                                expected arg type: {:?}\n\
-                                got arg type: {:?}",
-                                func_arg_type, arg_type,
+                                expected arg type: {func_arg_type:?}\n\
+                                got arg type: {arg_type:?}",
                             ));
                         }
                     }
                     (func_type, _arg_type) => {
                         // TODO
-                        return Err(format!("cannot apply an argument to type: {:?}", func_type));
+                        return Err(format!("cannot apply an argument to type: {func_type:?}"));
                     }
                 };
                 (tir::RawTerm::App(tir::App { func, arg }), ty)
@@ -170,7 +170,7 @@ impl<'i, 'a> TypeCheck<'i, 'a> for uir::Term<'i> {
     }
 }
 
-impl<'i, 'a> uir::Type<'i> {
+impl<'a> uir::Type<'_> {
     fn eval(&self, ctx: &Context<'a, '_>) -> Result<InternedType<'a>, TypeCheckError> {
         let WithInfo(_info, ty) = self;
 

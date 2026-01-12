@@ -33,7 +33,7 @@ enum Subcommands {
 }
 
 fn parse(input: &str) -> Result<fl::reprs::ast::Term<'_>, String> {
-    let parser = fl::parsing::Parser::new();
+    let parser = fl::parsing::Parser::default();
     parser.parse(input).map_err(|e| format!("parse error: {e}"))
 }
 

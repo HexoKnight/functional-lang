@@ -8,6 +8,7 @@ mod context {
     /// Cheaply cloneable (hopefully) append-only stack
     type Stack<T> = Vec<T>;
 
+    #[must_use]
     #[derive(Clone)]
     pub(super) struct Context<'i> {
         var_stack: Stack<&'i str>,
@@ -29,7 +30,7 @@ mod context {
         pub(super) fn find_var(&self, name: &'i str) -> Option<usize> {
             self.var_stack
                 .iter()
-                .cloned::<&_>()
+                .copied::<&_>()
                 .rev()
                 .position(|var| var == name)
         }
