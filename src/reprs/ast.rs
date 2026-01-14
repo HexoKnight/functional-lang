@@ -21,6 +21,8 @@ pub enum RawTerm<'i> {
         ident: Ident<'i>,
     },
 
+    Enum(Type<'i>, Ident<'i>),
+
     Tuple(Box<[Term<'i>]>),
 
     Bool(bool),

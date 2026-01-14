@@ -2,7 +2,7 @@ use itertools::Itertools;
 
 use crate::common::WithInfo;
 use crate::reprs::ast;
-use crate::reprs::common::ArgStructure;
+use crate::reprs::common::{ArgStructure, EnumLabel};
 use crate::reprs::untyped_ir as ir;
 
 use self::context::Context;
@@ -91,6 +91,9 @@ impl<'i> Validate<'i> for ast::Term<'i> {
                     name: ident.name,
                     index,
                 }
+            }
+            ast::RawTerm::Enum(enum_type, variant) => {
+                ir::RawTerm::Enum(enum_type.validate(ctx)?, EnumLabel(variant.name))
             }
             ast::RawTerm::Tuple(elements) => {
                 ir::RawTerm::Tuple(elements.iter().map(|t| t.validate(ctx)).try_collect()?)

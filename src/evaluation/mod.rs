@@ -4,7 +4,7 @@ use typed_arena::Arena;
 use crate::common::WithInfo;
 use crate::reprs::common::ArgStructure;
 use crate::reprs::typed_ir::{self as tir};
-use crate::reprs::value::{self, Abs, RawValue};
+use crate::reprs::value::{self, Abs, Func, RawValue};
 
 use self::context::Context;
 pub use self::context::ContextClosure;
@@ -98,30 +98,21 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
             tir::RawTerm::Abs {
                 arg_structure,
                 body,
-            } => RawValue::Abs(value::Abs {
+            } => RawValue::Func(Func::Abs(value::Abs {
                 closed_ctx: ctx.create_closure(),
                 arg_structure: arg_structure.clone(),
                 body: body.as_ref(),
-            }),
+            })),
             tir::RawTerm::App { func, arg } => {
-                let RawValue::Abs(value::Abs {
-                    closed_ctx,
-                    arg_structure,
-                    body,
-                }) = func.evaluate(ctx)?.1
-                else {
+                let RawValue::Func(func) = func.evaluate(ctx)?.1 else {
                     return Err(
-                        "illegal failure: type checking failed: application on non-abstraction"
+                        "illegal failure: type checking failed: application on non-function"
                             .to_string(),
                     );
                 };
 
                 let arg = arg.evaluate(ctx)?;
-                let args = arg.destructure(arg_structure)?;
-
-                let ctx_ = ctx.apply_closure(closed_ctx).push_vars(args);
-                let res = body.evaluate(&ctx_)?;
-                res.1
+                func.evaluate_arg(arg, ctx)?
             }
             tir::RawTerm::Var { index } => ctx
                 .get_var(*index)
@@ -129,6 +120,7 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
                 .1
                 // TODO: maybe try eliminate this clone??
                 .clone(),
+            tir::RawTerm::Enum(label) => RawValue::Func(Func::EnumCons(*label)),
             tir::RawTerm::Tuple(elems) => {
                 RawValue::Tuple(elems.iter().map(|e| e.evaluate(ctx)).try_collect()?)
             }
@@ -136,6 +128,29 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
         };
 
         Ok(WithInfo(*info, value))
+    }
+}
+
+impl<'i: 'ir, 'ir: 'a, 'a> Func<'i, Abs<'i, 'ir, 'a>> {
+    fn evaluate_arg(
+        self,
+        arg: Value<'i, 'ir, 'a>,
+        ctx: &Context<'i, 'ir, 'a>,
+    ) -> Result<RawValue<'i, Abs<'i, 'ir, 'a>>, EvaluationError> {
+        let value = match self {
+            Func::Abs(value::Abs {
+                closed_ctx,
+                arg_structure,
+                body,
+            }) => {
+                let args = arg.destructure(arg_structure)?;
+
+                let ctx_ = ctx.apply_closure(closed_ctx).push_vars(args);
+                body.evaluate(&ctx_)?.1
+            }
+            Func::EnumCons(label) => RawValue::EnumVariant(label, Box::new(arg)),
+        };
+        Ok(value)
     }
 }
 

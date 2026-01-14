@@ -1,6 +1,6 @@
 use crate::{
     common::WithInfo,
-    reprs::{common::ArgStructure, common::Span},
+    reprs::common::{ArgStructure, EnumLabel, Span},
 };
 
 pub type Term<'i> = WithInfo<Span<'i>, RawTerm<'i>>;
@@ -19,6 +19,8 @@ pub enum RawTerm<'i> {
     Var {
         index: usize,
     },
+
+    Enum(EnumLabel<'i>),
 
     Tuple(Box<[Term<'i>]>),
 

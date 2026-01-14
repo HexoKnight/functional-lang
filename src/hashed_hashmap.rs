@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    fmt::Debug,
     hash::{Hash, Hasher},
 };
 
@@ -8,16 +7,9 @@ use derive_where::derive_where;
 use itertools::Itertools;
 
 #[derive_where(Eq, PartialEq; HashMap<K, V>)]
-pub struct HashedHashMap<K, V>(HashMap<K, V>);
+pub struct HashedHashMap<K, V>(pub HashMap<K, V>);
 
-impl<K, V> Debug for HashedHashMap<K, V>
-where
-    HashMap<K, V>: Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
+crate::newtype_derive!([HashedHashMap<K, V>(HashMap<K, V>)] Debug);
 
 impl<K, V> FromIterator<(K, V)> for HashedHashMap<K, V>
 where

@@ -178,6 +178,29 @@ impl<'i: 'a, 'a> TypeCheck<'i, 'a> for uir::Term<'i> {
                     format!("illegal failure: variable index not found: {index}\n")
                 })?,
             ),
+            uir::RawTerm::Enum(enum_type, label) => {
+                let enum_type = enum_type.eval(ctx)?;
+
+                let Type::Enum(variants) = enum_type else {
+                    // TODO
+                    return Err(format!(
+                        "cannot construct an enum with a non-enum type: {enum_type:?}"
+                    ));
+                };
+                let Some(variant_type) = variants.0.get(label.0) else {
+                    // TODO
+                    return Err(format!(
+                        "enum type does not contain label '{label:?}': {enum_type:?}"
+                    ));
+                };
+                (
+                    tir::RawTerm::Enum(*label),
+                    ctx.intern(Type::Arr {
+                        arg: variant_type,
+                        result: enum_type,
+                    }),
+                )
+            }
             uir::RawTerm::Tuple(elems) => {
                 let (elems, types): (Vec<_>, Vec<_>) =
                     elems.iter().map(|e| e.type_check(ctx)).try_collect()?;

@@ -171,4 +171,20 @@ fn enums() {
     evaluate_success(r"\x: enum {} x");
     evaluate_success(r"\x: enum { single: enum {nested: enum {}} } x");
     evaluate_success(r"\x: enum { some: bool, none: () } x");
+
+    parse_failure(r"\enum:() ()");
+    parse_failure(r"enum enum {some:bool,none:()}");
+    type_check_failure(r"enum enum {some:bool,none:()} otherlabel");
+    evaluate_eq(
+        r"enum enum {some:bool,none:()} some",
+        r"enum enum {some:bool        } some",
+    );
+
+    evaluate_success(
+        r"(\x: bool -> enum { some: bool, none: () } x) (enum enum {some:bool,none:()} some)",
+    );
+
+    evaluate_success(
+        r"(\x: bool -> enum { some: bool, none: () } x) (enum enum {some:bool,none:()} some)",
+    );
 }

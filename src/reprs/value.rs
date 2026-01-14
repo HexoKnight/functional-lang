@@ -4,7 +4,7 @@ use crate::{
     common::WithInfo,
     evaluation::ContextClosure,
     reprs::{
-        common::{ArgStructure, Span},
+        common::{ArgStructure, EnumLabel, Span},
         typed_ir,
     },
 };
@@ -13,10 +13,18 @@ pub type Value<'i, Abs = ()> = WithInfo<Span<'i>, RawValue<'i, Abs>>;
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum RawValue<'i, Abs> {
-    Abs(Abs),
+    Func(Func<'i, Abs>),
 
+    EnumVariant(EnumLabel<'i>, Box<Value<'i, Abs>>),
     Tuple(Box<[Value<'i, Abs>]>),
     Bool(bool),
+}
+
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub enum Func<'i, Abs> {
+    Abs(Abs),
+
+    EnumCons(EnumLabel<'i>),
 }
 
 #[derive(Clone)]
@@ -34,7 +42,10 @@ impl<'i, A> Value<'i, A> {
         WithInfo(
             self.0,
             match self.1 {
-                RawValue::Abs(a) => RawValue::Abs(f(a)),
+                RawValue::Func(Func::Abs(a)) => RawValue::Func(Func::Abs(f(a))),
+                RawValue::Func(Func::EnumCons(l)) => RawValue::Func(Func::EnumCons(l)),
+
+                RawValue::EnumVariant(l, v) => RawValue::EnumVariant(l, Box::new(v.map_abs_ref(f))),
                 RawValue::Tuple(e) => {
                     RawValue::Tuple(e.into_iter().map(|e| e.map_abs_ref(f)).collect())
                 }
