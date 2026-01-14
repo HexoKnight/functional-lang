@@ -96,91 +96,42 @@ mod utils {
 }
 
 #[test]
-fn parsing() {
-    parse_success(r"\x:bool x // comment");
+fn comments() {
+    evaluate_success(r"\x:bool x // comment");
     #[rustfmt::skip]
-        parse_failure(r"
-            \
-            // x:bool
-        ");
+    parse_failure(r"
+        \
+        // x:bool x
+    ");
+}
 
-    parse_success(r"\x:bool x");
-    parse_success(r"(\x:bool x)");
-    parse_success(r"\x:bool \ y : bool x");
+#[test]
+fn basic_abs() {
+    evaluate_success(r"(\x:bool x)");
+    evaluate_success(r"\x:bool x");
+    evaluate_success(r"\x:bool \ y : bool x");
+
     parse_failure(r"\x x");
     parse_failure(r"\x:bool");
 
-    parse_success(r"\x:bool x x");
+    validate_failure(r"\x:bool y");
+}
 
-    parse_success(r"(\x:bool x) true");
-    parse_success(r"(\x: bool -> bool x) (\y: bool false)");
+#[test]
+fn basic_app() {
+    type_check_failure(r"\x:bool x x");
+
+    evaluate_success(r"(\x:bool x) true");
+    evaluate_success(r"(\x: bool -> bool x) (\y: bool false)");
+
     parse_failure(r"(\x: bool -> bool x)  \y: bool false");
     parse_eq(
         r"\x:bool ->  bool -> bool  x x x",
         r"\x:bool -> (bool -> bool)(x x)x",
     );
 
-    parse_success(r"(true, false)");
-    parse_success(r"()");
-    parse_success(r"(\x:(bool, ()) x) (false, ())");
-    parse_success(r"(\(x, y):(bool, bool) x) (false, true)");
-
-    parse_success(r"\x: enum {} x");
-    parse_success(r"\x: enum { single: enum {nested: enum {}} } x");
-    parse_success(r"\x: enum { some: bool, none: () } x");
-}
-
-#[test]
-fn validation() {
-    validate_success(r"\x:bool x");
-    validate_success(r"(\x:bool x)");
-    validate_success(r"\x:bool \ y : bool x");
-    validate_failure(r"\x:bool y");
-
-    validate_success(r"\x:bool x x");
-
-    validate_success(r"(\x:bool x) true");
-    validate_success(r"(\x: bool -> bool x) (\y: bool false)");
-
-    validate_success(r"\(x,y,(z,x)): ((),(),((),bool)) x");
-}
-
-#[test]
-fn type_checking() {
-    type_check_success(r"\x:bool x");
-    type_check_success(r"\x:bool \y:bool x");
-
-    type_check_success(r"(\x:bool x) true");
-    type_check_success(r"\x:bool->bool x false");
-    type_check_success(r"(\x: bool -> bool x) (\y: bool false)");
-
-    type_check_success(r"(\id:bool->bool id) (\x:bool x)");
-
-    let id = def(r"id:bool->bool", r"\x:bool x");
-    let idf = def(r"idf:(bool->bool)->bool->bool", r"\x:bool->bool x");
-    let c = def(r"c:bool->bool->bool", r"\x:bool \y:bool x");
-
-    type_check_success(&wrapped(&[&id, &idf, &c], r"(c true) ((idf id) false)"));
-    type_check_success(&wrapped(&[&id, &idf, &c], r"idf (c (id true))"));
-    type_check_failure(&wrapped(&[&idf, &c], r"idf c"));
-
-    type_check_failure(&wrapped(&[&idf, &c], r"idf c"));
-
-    type_check_success(r"\(x,y,(z,x)): ((),(),((),bool)) x");
-    type_check_success(r"\(x,y):(bool,bool) x");
-    type_check_failure(r"\(x,y,(z,x)): ((),(),(),bool) x");
-    type_check_success(r"\(x,x):(bool,()) (\():()()) x");
-    type_check_failure(r"\(x,x):(bool,()) (\y:bool ()) x");
-}
-
-#[test]
-fn evaluation() {
-    evaluate_success(r"\x:bool x");
-    evaluate_success(r"\x:bool \y:bool x");
-
-    evaluate_success(r"(\x:bool x) true");
-    evaluate_success(r"(\x: bool -> bool x true) (\y: bool false)");
-
+    evaluate_success(r"(\x: bool -> bool x) (\y: bool false)");
+    evaluate_eq(r"(\x: bool -> bool x true) (\y: bool false)", r"false");
     evaluate_success(r"(\id:bool->bool id) (\x:bool x)");
 
     evaluate_eq(r"(\x:bool \y:bool (\z:bool z) x) false true", r"false");
@@ -189,13 +140,35 @@ fn evaluation() {
     let idf = def(r"idf:(bool->bool)->bool->bool", r"\x:bool->bool x");
     let c = def(r"c:bool->bool->bool", r"\x:bool \y:bool x");
 
+    evaluate_success(&wrapped(&[&id, &idf, &c], r"(c true) ((idf id) false)"));
+    evaluate_success(&wrapped(&[&id, &idf, &c], r"idf (c (id true))"));
+    type_check_failure(&wrapped(&[&idf, &c], r"idf c"));
+
     evaluate_eq(
         &wrapped(&[&id, &idf, &c], r"(c true) ((idf id) false)"),
         r"true",
     );
     evaluate_success(&wrapped(&[&id, &idf, &c], r"idf (c (id true))"));
+}
 
-    evaluate_eq(r"(\x:bool true) false", r"true");
+#[test]
+fn tuples() {
+    evaluate_success(r"(true, false)");
+    evaluate_success(r"()");
+    evaluate_eq(r"(\x:(bool, ()) x) (false, ())", r"(false, ())");
+    evaluate_eq(r"(\(x, y):(bool, bool) x) (false, true)", r"false");
+    evaluate_eq(r"(\(x, x):(bool, bool) x) (false, true)", r"true");
+
+    evaluate_success(r"\(x,y,(z,x)): ((),(),((),bool)) x");
+    type_check_failure(r"\(x,y,(z,x)): ((),(),(),bool) x");
+    type_check_failure(r"\(x,x):(bool,()) (\y:bool ()) x");
 
     evaluate_eq(r"(\(x,y,z):(bool,(),()) x) (true, (), ())", r"true")
+}
+
+#[test]
+fn enums() {
+    evaluate_success(r"\x: enum {} x");
+    evaluate_success(r"\x: enum { single: enum {nested: enum {}} } x");
+    evaluate_success(r"\x: enum { some: bool, none: () } x");
 }
