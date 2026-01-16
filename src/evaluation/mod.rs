@@ -4,7 +4,7 @@ use typed_arena::Arena;
 use crate::common::WithInfo;
 use crate::reprs::common::ArgStructure;
 use crate::reprs::typed_ir::{self as tir};
-use crate::reprs::value::{self, Abs, Func, RawValue};
+use crate::reprs::value::{self, Closure, Func, RawValue};
 
 use self::context::Context;
 pub use self::context::ContextClosure;
@@ -71,7 +71,7 @@ mod context {
     }
 }
 
-type Value<'i, 'ir, 'a> = value::Value<'i, Abs<'i, 'ir, 'a>>;
+type Value<'i, 'ir, 'a> = value::Value<'i, Closure<'i, 'ir, 'a>>;
 
 pub type EvaluationError = String;
 
@@ -84,7 +84,7 @@ trait Evaluate<'i, 'ir, 'a> {
 pub fn evaluate<'i>(typed_ir: &tir::Term<'i>) -> Result<value::Value<'i, ()>, EvaluationError> {
     let arena = Arena::new();
     let value = typed_ir.evaluate(&Context::with_arena(&arena))?;
-    Ok(value.map_abs(|_| ()))
+    Ok(value.map_closure(|_| ()))
 }
 
 impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
@@ -98,11 +98,13 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
             tir::RawTerm::Abs {
                 arg_structure,
                 body,
-            } => RawValue::Func(Func::Abs(value::Abs {
-                closed_ctx: ctx.create_closure(),
-                arg_structure: arg_structure.clone(),
-                body: body.as_ref(),
-            })),
+            } => RawValue::Func(Func::Abs(
+                arg_structure.clone(),
+                value::Closure {
+                    closed_ctx: ctx.create_closure(),
+                    body: body.as_ref(),
+                },
+            )),
             tir::RawTerm::App { func, arg } => {
                 let RawValue::Func(func) = func.evaluate(ctx)?.1 else {
                     return Err(
@@ -131,18 +133,14 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
     }
 }
 
-impl<'i: 'ir, 'ir: 'a, 'a> Func<'i, Abs<'i, 'ir, 'a>> {
+impl<'i: 'ir, 'ir: 'a, 'a> Func<'i, Closure<'i, 'ir, 'a>> {
     fn evaluate_arg(
         self,
         arg: Value<'i, 'ir, 'a>,
         ctx: &Context<'i, 'ir, 'a>,
-    ) -> Result<RawValue<'i, Abs<'i, 'ir, 'a>>, EvaluationError> {
+    ) -> Result<RawValue<'i, Closure<'i, 'ir, 'a>>, EvaluationError> {
         let value = match self {
-            Func::Abs(value::Abs {
-                closed_ctx,
-                arg_structure,
-                body,
-            }) => {
+            Func::Abs(arg_structure, value::Closure { closed_ctx, body }) => {
                 let args = arg.destructure(arg_structure)?;
 
                 let ctx_ = ctx.apply_closure(closed_ctx).push_vars(args);

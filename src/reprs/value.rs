@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use derive_where::derive_where;
 
 use crate::{
@@ -9,52 +11,60 @@ use crate::{
     },
 };
 
-pub type Value<'i, Abs = ()> = WithInfo<Span<'i>, RawValue<'i, Abs>>;
+pub type Value<'i, Closure = ()> = WithInfo<Span<'i>, RawValue<'i, Closure>>;
 
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub enum RawValue<'i, Abs> {
-    Func(Func<'i, Abs>),
+pub enum RawValue<'i, Closure> {
+    Func(Func<'i, Closure>),
 
-    EnumVariant(EnumLabel<'i>, Box<Value<'i, Abs>>),
-    Tuple(Box<[Value<'i, Abs>]>),
+    EnumVariant(EnumLabel<'i>, Box<Value<'i, Closure>>),
+    Tuple(Box<[Value<'i, Closure>]>),
     Bool(bool),
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub enum Func<'i, Abs> {
-    Abs(Abs),
+pub enum Func<'i, Closure> {
+    Abs(ArgStructure, Closure),
 
     EnumCons(EnumLabel<'i>),
 }
 
 #[derive(Clone)]
 #[derive_where(Debug)]
-pub struct Abs<'i, 'ir, 'a> {
+pub struct Closure<'i, 'ir, 'a> {
     #[derive_where(skip)]
     pub closed_ctx: ContextClosure<'i, 'ir, 'a>,
 
-    pub arg_structure: ArgStructure,
     pub body: &'ir typed_ir::Term<'i>,
 }
 
-impl<'i, A> Value<'i, A> {
-    fn map_abs_ref<T>(self, f: &mut impl FnMut(A) -> T) -> Value<'i, T> {
+impl<'i, Closure> Value<'i, Closure> {
+    fn map_closure_rec<T>(self, map: &mut impl FnMut(Closure) -> T) -> Value<'i, T> {
         WithInfo(
             self.0,
             match self.1 {
-                RawValue::Func(Func::Abs(a)) => RawValue::Func(Func::Abs(f(a))),
-                RawValue::Func(Func::EnumCons(l)) => RawValue::Func(Func::EnumCons(l)),
+                RawValue::Func(f) => RawValue::Func(f.map_closure_rec(map)),
 
-                RawValue::EnumVariant(l, v) => RawValue::EnumVariant(l, Box::new(v.map_abs_ref(f))),
+                RawValue::EnumVariant(l, v) => {
+                    RawValue::EnumVariant(l, Box::new(v.map_closure_rec(map)))
+                }
                 RawValue::Tuple(e) => {
-                    RawValue::Tuple(e.into_iter().map(|e| e.map_abs_ref(f)).collect())
+                    RawValue::Tuple(e.into_iter().map(|e| e.map_closure_rec(map)).collect())
                 }
                 RawValue::Bool(b) => RawValue::Bool(b),
             },
         )
     }
 
-    pub fn map_abs<T>(self, mut f: impl FnMut(A) -> T) -> Value<'i, T> {
-        self.map_abs_ref(&mut f)
+    pub fn map_closure<T>(self, mut f: impl FnMut(Closure) -> T) -> Value<'i, T> {
+        self.map_closure_rec(&mut f)
+    }
+}
+impl<'i, Closure> Func<'i, Closure> {
+    fn map_closure_rec<T>(self, map: &mut impl FnMut(Closure) -> T) -> Func<'i, T> {
+        match self {
+            Func::Abs(a, closure) => Func::Abs(a, map(closure)),
+            Func::EnumCons(l) => Func::EnumCons(l),
+        }
     }
 }
