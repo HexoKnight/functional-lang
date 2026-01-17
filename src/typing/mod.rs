@@ -307,8 +307,32 @@ impl<'i: 'a, 'a> uir::Type<'i> {
 }
 
 fn ty_is_subtype<'a>(supertype: InternedType<'a>, subtype: InternedType<'a>) -> bool {
-    // TODO: subtyping
-    ty_eq(supertype, subtype)
+    match (supertype, subtype) {
+        (
+            Type::Arr {
+                arg: arg_sup,
+                result: res_sup,
+            },
+            Type::Arr {
+                arg: arg_sub,
+                result: res_sub,
+            },
+        ) => ty_is_subtype(arg_sub, arg_sup) && ty_is_subtype(res_sup, res_sub),
+        (Type::Enum(variants_sup), Type::Enum(variants_sub)) => {
+            variants_sub.0.iter().all(|(l, ty_sub)| {
+                variants_sup
+                    .0
+                    .get(l)
+                    .is_some_and(|ty_sup| ty_is_subtype(ty_sup, ty_sub))
+            })
+        }
+        (Type::Tuple(elems_sup), Type::Tuple(elems_sub)) => {
+            elems_sup.len() == elems_sub.len()
+                && zip_eq(elems_sup, elems_sub).all(|(sup, sub)| ty_is_subtype(sup, sub))
+        }
+        (Type::Bool, Type::Bool) => true,
+        _ => false,
+    }
 }
 
 fn ty_eq<'a>(ty1: InternedType<'a>, ty2: InternedType<'a>) -> bool {

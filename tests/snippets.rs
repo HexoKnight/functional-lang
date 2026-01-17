@@ -280,12 +280,17 @@ fn enums() {
         }
         (enum
             enum {
-                onlya: enum { a:() },
-                none: enum { },
                 onlyb: enum { b:bool },
             }
             onlyb (enum enum { b:bool } b false)
         )",
         r"enum enum { b:bool } b false",
     );
+}
+
+#[test]
+fn subtyping() {
+    evaluate_success(r"(). enum enum {a:()} a .\x:enum{a:(), new:()} x");
+    evaluate_success(r"\x:(enum{}, ()) x.\x:(enum{new:()}, ()) x");
+    evaluate_success(r"\x:enum{a:()} -> () x.\x:enum{} -> () x");
 }
