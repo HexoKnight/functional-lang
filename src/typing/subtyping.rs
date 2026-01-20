@@ -54,7 +54,13 @@ pub(super) fn check_subtype<'a>(
                 "bounds of subtype type arg must enclose those of the supertype type arg:"
                     .to_string()
             }))
-            .and_then(|()| check_subtype(supertype, subtype, &ctx.push_ty_var(std::cmp::min(name_super, name_sub), *bounds_super)))
+            .and_then(|()| {
+                check_subtype(
+                    supertype,
+                    subtype,
+                    &ctx.push_ty_var(std::cmp::min(name_super, name_sub), *bounds_super),
+                )
+            })
         }
         (
             Type::TyAbs {
@@ -99,8 +105,8 @@ pub(super) fn check_subtype<'a>(
             let upper = subtype_bounds
                 .upper
                 .unwrap_or_else(|| ctx.intern(Type::Any));
-                // a type is guaranteed to be a supertype of the instantiated type iff it is a
-                // supertype of the upper bound (due to the transitivity of subtyping)
+            // a type is guaranteed to be a supertype of the instantiated type iff it is a
+            // supertype of the upper bound (due to the transitivity of subtyping)
             check_subtype(supertype, upper, ctx).map_err(try_prepend(|| {
                 Ok(format!(
                     "subtyping must be guaranteed for all possible instantiations of type var: {}\n\
@@ -112,48 +118,45 @@ pub(super) fn check_subtype<'a>(
         }
         (
             Type::Arr {
-                arg: arg_sup,
-                result: res_sup,
+                arg: arg_super,
+                result: res_super,
             },
             Type::Arr {
                 arg: arg_sub,
                 result: res_sub,
             },
         ) => {
-            check_subtype(arg_sub, arg_sup, ctx)?;
-            check_subtype(res_sup, res_sub, ctx)
+            check_subtype(arg_sub, arg_super, ctx)?;
+            check_subtype(res_super, res_sub, ctx)
         }
-        (Type::Enum(variants_sup), Type::Enum(variants_sub)) => variants_sub
+        (Type::Enum(variants_super), Type::Enum(variants_sub)) => variants_sub
             .0
             .iter()
             // for each variant of the subtype:
             .try_for_each(|(l, ty_sub)| {
                 // check that the supertype also has it...
-                let Some(ty_sup) = variants_sup.0.get(l) else {
+                let Some(ty_super) = variants_super.0.get(l) else {
                     return Err(format!(
                         "subtyping error: label '{l}' missing from supertype",
                     ));
                 };
                 // and that the variant types maintain the same subtyping relationship
-                check_subtype(ty_sup, ty_sub, ctx)
+                check_subtype(ty_super, ty_sub, ctx)
             }),
-        (Type::Tuple(elems_sup), Type::Tuple(elems_sub)) => {
-            if elems_sup.len() != elems_sub.len() {
+        (Type::Tuple(elems_super), Type::Tuple(elems_sub)) => {
+            if elems_super.len() != elems_sub.len() {
                 return Err("subtyping error: tuples have different lengths".to_string());
             }
-            zip_eq(elems_sup, elems_sub).try_for_each(|(sup, sub)| check_subtype(sup, sub, ctx))
+            zip_eq(elems_super, elems_sub)
+                .try_for_each(|(elem_super, elem_sub)| check_subtype(elem_super, elem_sub, ctx))
         }
-        (Type::Bool, Type::Bool) => Ok(()),
-        (Type::Any, _) => Ok(()),
-        (_, Type::Any) => Err(
-            "_ is the any type: it has no supertypes bar itself and cannot be constructed (directly)"
-                .to_string(),
-        ),
-        (_, Type::Never) => Ok(()),
-        (Type::Never, _) => Err(
-            "! is the never type: it has no subtypes bar itself and cannot be constructed"
-                .to_string(),
-        ),
+        (Type::Bool, Type::Bool) | (Type::Any, _) | (_, Type::Never) => Ok(()),
+        (_, Type::Any) => Err("_ is the any type: \
+            it has no supertypes bar itself and cannot be constructed (directly)"
+            .to_string()),
+        (Type::Never, _) => Err("! is the never type: \
+            it has no subtypes bar itself and cannot be constructed"
+            .to_string()),
         // not using _ to avoid catching more cases than intended
         (Type::Arr { .. } | Type::Enum(..) | Type::Tuple(..) | Type::Bool, _) => {
             Err("subtyping error: types are incompatible".to_string())

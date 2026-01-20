@@ -122,6 +122,12 @@ trait TypeCheck<'i, 'a> {
     ) -> Result<(Self::TypeChecked, InternedType<'a>), TypeCheckError>;
 }
 
+/// Takes an [`untyped_ir::Term`][uir::Term] and checks that it can be typed, returning a
+/// [`typed_ir::Term`][tir::Term], which is entirely type erased, along with a string
+/// representing the type of the term.
+///
+/// # Errors
+/// When type checking fails.
 pub fn type_check<'i>(
     untyped_ir: &uir::Term<'i>,
 ) -> Result<(tir::Term<'i>, String), TypeCheckError> {

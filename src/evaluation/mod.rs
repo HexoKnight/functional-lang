@@ -83,6 +83,11 @@ trait Evaluate<'i, 'ir, 'a> {
     fn evaluate(&'ir self, ctx: &Context<'i, 'ir, 'a>) -> Result<Self::Evaluated, EvaluationError>;
 }
 
+/// Takes a [`typed_ir::Term`][tir::Term] and evaluates it, returning the resulting
+/// [`Value`][value::Value].
+///
+/// # Errors
+/// When evaluation fails.
 pub fn evaluate<'i>(typed_ir: &tir::Term<'i>) -> Result<value::Value<'i, ()>, EvaluationError> {
     let arena = Arena::new();
     let value = typed_ir.evaluate(&Context::with_arena(&arena))?;

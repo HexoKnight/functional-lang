@@ -52,6 +52,7 @@ impl Lvl {
     }
 
     /// deeper than or equal to
+    #[must_use]
     pub fn deeper_than(self, other: Self) -> bool {
         self.0 >= other.0
     }
@@ -62,6 +63,7 @@ impl Lvl {
     }
 
     /// deepen level by one level (shouldn't reach maximum)
+    #[must_use]
     pub fn deeper(self) -> Self {
         Self(self.0 + 1)
     }

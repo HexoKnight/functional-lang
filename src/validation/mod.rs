@@ -59,6 +59,15 @@ trait Validate<'i> {
     fn validate(&self, ctx: &Context<'i>) -> Result<Self::Validated, ValidationError>;
 }
 
+/// Takes an [`ast::Term`] and checks that it is 'valid', returning an
+/// [`untyped_ir::Term`][ir::Term], which contains this encoded information.
+///
+/// The actual validated and/or encoded information includes:
+/// - (type) variable name resolution (encoded in de Bruijn indexes/levels)
+/// - enum type and match label uniqueness
+///
+/// # Errors
+/// When validation fails.
 pub fn validate<'i>(ast: &ast::Term<'i>) -> Result<ir::Term<'i>, ValidationError> {
     let ctx = Context::new();
     ast.validate(&ctx)
