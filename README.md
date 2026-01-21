@@ -4,10 +4,11 @@ Simply typed lambda calculus with some small extensions. Mostly standard syntax.
 
 ## Language features
 
-- structural type system
+- subtyping
+- (impredicative) polymorphism
+- a structural type system
 - enum types
 - tuple types
-- subtyping
 
 # Design
 
@@ -22,7 +23,6 @@ Currently uses a rust parser generator library called LALRPOP.
 ## [Validation](src/validation)
 
 Performs pre-type-checking things like name resolution to produce an 'untyped IR'.
-In fact, currently all it does is name resolution (converts the AST to use de Bruijn indices).
 But it is intended to also be the place for syntax desugaring.
 
 ## [Typing](src/typing)
