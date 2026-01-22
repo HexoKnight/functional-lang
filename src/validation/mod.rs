@@ -81,6 +81,14 @@ impl<'i, T: Validate<'i>> Validate<'i> for Box<T> {
     }
 }
 
+impl<'i, T: Validate<'i>> Validate<'i> for Option<T> {
+    type Validated = Option<T::Validated>;
+
+    fn validate(&self, ctx: &Context<'i>) -> Result<Self::Validated, ValidationError> {
+        self.as_ref().map(|t| t.validate(ctx)).transpose()
+    }
+}
+
 impl<'i> Validate<'i> for ast::Term<'i> {
     type Validated = ir::Term<'i>;
 

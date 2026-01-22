@@ -212,7 +212,6 @@ impl Value<'_, '_, '_> {
                     let st_len = st_elems.len();
                     let val_len = val_elems.len();
                     if st_len != val_len {
-                        // TODO
                         return Err(format!(
                             "illegal failure: type checking failed: {st_len}-tuple destructure on {val_len}-tuple"
                         ));
@@ -221,7 +220,6 @@ impl Value<'_, '_, '_> {
                 }
 
                 (ArgStructure::Tuple(_), _) => {
-                    // TODO
                     return Err(
                         "illegal failure: type checking failed: tuple destructure on non-tuple"
                             .to_string(),

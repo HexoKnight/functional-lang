@@ -6,6 +6,7 @@ Simply typed lambda calculus with some small extensions. Mostly standard syntax.
 
 - subtyping
 - (impredicative) polymorphism
+- local argument type inference
 - a structural type system
 - enum types
 - tuple types

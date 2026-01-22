@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use itertools::{Itertools, zip_eq};
 use typed_arena::Arena;
 
-use crate::common::WithInfo;
+use crate::common::{WithInfo, maybe_zip_eq};
 use crate::reprs::common::{ArgStructure, Lvl};
 use crate::reprs::{
     typed_ir::{self as tir},
@@ -120,6 +120,7 @@ trait TypeCheck<'i, 'a> {
 
     fn type_check(
         &self,
+        check_type: Option<InternedType<'a>>,
         ctx: &Context<'a, '_>,
     ) -> Result<(Self::TypeChecked, InternedType<'a>), TypeCheckError>;
 }
@@ -137,7 +138,7 @@ pub fn type_check<'i>(
     let inner = ContextInner::new(&arena);
     let ctx = Context::with_inner(&inner);
 
-    let (term, ty) = untyped_ir.type_check(&ctx)?;
+    let (term, ty) = untyped_ir.type_check(None, &ctx)?;
     Ok((term, ty.display(&ctx)?))
 }
 
@@ -146,9 +147,10 @@ impl<'i, 'a, T: TypeCheck<'i, 'a>> TypeCheck<'i, 'a> for Box<T> {
 
     fn type_check(
         &self,
+        check_type: Option<InternedType<'a>>,
         ctx: &Context<'a, '_>,
     ) -> Result<(Self::TypeChecked, InternedType<'a>), TypeCheckError> {
-        T::type_check(self, ctx).map(|(term, ty)| (Box::new(term), ty))
+        T::type_check(self, check_type, ctx).map(|(term, ty)| (Box::new(term), ty))
     }
 }
 
@@ -157,9 +159,21 @@ impl<'i: 'a, 'a> TypeCheck<'i, 'a> for uir::Term<'i> {
 
     fn type_check(
         &self,
+        check_type: Option<InternedType<'a>>,
         ctx: &Context<'a, '_>,
     ) -> Result<(Self::TypeChecked, InternedType<'a>), TypeCheckError> {
         let WithInfo(info, term) = self;
+
+        // mutable so it can be `take()`n when used then for cases that don't use it, it will be
+        // checked afterwards
+        let mut check_type = if let Some(ty) = check_type {
+            // we need a concrete type to do any real checking
+            ty.upper_concrete(ctx)?
+                // top type provides no information and is equivalent to no check_type at all
+                .not_any()
+        } else {
+            None
+        };
 
         let (term, ty) = match term {
             uir::RawTerm::Abs {
@@ -167,30 +181,109 @@ impl<'i: 'a, 'a> TypeCheck<'i, 'a> for uir::Term<'i> {
                 arg_type,
                 body,
             } => {
-                let arg_type = arg_type.eval(ctx)?;
-                let destructured_arg_types = arg_type.destructure(arg_structure, ctx)?;
+                if let Some(arg_type) = arg_type {
+                    let arg_type = arg_type.eval(ctx)?;
 
-                let ctx_ = ctx.push_var_tys(destructured_arg_types);
-                let (body, body_type) = body.type_check(&ctx_)?;
+                    let (check_arg, check_body) = if let Some(check_type) = check_type.take() {
+                        let Type::Arr { arg, result } = check_type else {
+                            return Err(format!(
+                                "expected: {}\n\
+                                got function definition",
+                                check_type.display(ctx)?
+                            ));
+                        };
+                        (Some(*arg), Some(*result))
+                    } else {
+                        (None, None)
+                    };
 
-                let ty = Type::Arr {
-                    arg: arg_type,
-                    result: body_type,
-                };
+                    if let Some(check_arg) = check_arg {
+                        check_subtype(arg_type, check_arg, ctx)?;
+                    }
 
-                (
-                    tir::RawTerm::Abs {
-                        arg_structure: arg_structure.clone(),
-                        body,
-                    },
-                    ctx.intern(ty),
-                )
+                    let destructured_arg_types = arg_type.destructure(arg_structure, ctx)?;
+                    let ctx_ = ctx.push_var_tys(destructured_arg_types);
+                    let (body, body_type) = body.type_check(check_body, &ctx_)?;
+
+                    let ty = Type::Arr {
+                        arg: arg_type,
+                        result: body_type,
+                    };
+
+                    (
+                        tir::RawTerm::Abs {
+                            arg_structure: arg_structure.clone(),
+                            body,
+                        },
+                        ctx.intern(ty),
+                    )
+                } else if let Some(check_type) = check_type.take() {
+                    let Type::Arr { arg, result } = check_type else {
+                        return Err(format!(
+                            "expected: {}\n\
+                            got function definition",
+                            check_type.display(ctx)?
+                        ));
+                    };
+
+                    let destructured_args = arg.destructure(arg_structure, ctx)?;
+
+                    let ctx_ = ctx.push_var_tys(destructured_args);
+                    let (body, body_type) = body.type_check(Some(result), &ctx_)?;
+
+                    let ty = Type::Arr {
+                        arg,
+                        result: body_type,
+                    };
+
+                    (
+                        tir::RawTerm::Abs {
+                            arg_structure: arg_structure.clone(),
+                            body,
+                        },
+                        ctx.intern(ty),
+                    )
+                } else {
+                    return Err(format!(
+                        "type inference error: cannot infer type of argument: {}",
+                        "TODO"
+                    ));
+                }
             }
             uir::RawTerm::App { func, arg } => {
-                let (func, func_type) = func.type_check(ctx)?;
-                let (arg, arg_type) = arg.type_check(ctx)?;
+                let check_type = check_type.take();
+                let check_func = check_type.map(|check_type| {
+                    ctx.intern(Type::Arr {
+                        arg: ctx.intern(Type::Never),
+                        result: check_type,
+                    })
+                });
 
-                let func_result_type = func_type.get_function_result_type(ctx)?;
+                let (func, func_type) = func.type_check(check_func, ctx)?;
+
+                let Type::Arr {
+                    arg: func_arg,
+                    result,
+                } = func_type.upper_concrete(ctx)?
+                else {
+                    return Err(if let Some(check_type) = check_type {
+                        format!(
+                            "expected: {}\n\
+                            got:      {}",
+                            check_type.display(ctx)?,
+                            func_type.display(ctx)?
+                        )
+                    } else {
+                        format!(
+                            "expected function\n\
+                            got: {}",
+                            func_type.display(ctx)?
+                        )
+                    });
+                };
+
+                let (arg, arg_type) = arg.type_check(Some(func_arg), ctx)?;
+
                 check_subtype(
                     ctx.intern(Type::Arr {
                         arg: arg_type,
@@ -203,13 +296,43 @@ impl<'i: 'a, 'a> TypeCheck<'i, 'a> for uir::Term<'i> {
                     e.insert_str(0, "error typing function application:\n");
                     e
                 })?;
-                (tir::RawTerm::App { func, arg }, func_result_type)
+                (tir::RawTerm::App { func, arg }, *result)
             }
             uir::RawTerm::TyAbs { name, bounds, body } => {
                 let bounds = bounds.eval(ctx)?;
 
+                let check_result = if let Some(check_type) = check_type.take() {
+                    let Type::TyAbs {
+                        name: _,
+                        bounds: check_bounds,
+                        result,
+                    } = check_type
+                    else {
+                        return Err(format!(
+                            "expected: {}\n\
+                            found a type abstraction",
+                            check_type.display(ctx)?
+                        ));
+                    };
+
+                    bounds
+                        .check_encloses(check_bounds, ctx)
+                        .map_err(try_prepend(|| {
+                            Ok(format!(
+                                "expected bounds (or wider): {}\n\
+                                but found:                  {}",
+                                check_bounds.display(ctx)?,
+                                bounds.display(ctx)?
+                            ))
+                        }))?;
+
+                    Some(*result)
+                } else {
+                    None
+                };
+
                 let ctx_ = ctx.push_ty_var(name, bounds);
-                let (body, body_type) = body.type_check(&ctx_)?;
+                let (body, body_type) = body.type_check(check_result, &ctx_)?;
 
                 let WithInfo(_info, body) = *body;
 
@@ -223,17 +346,28 @@ impl<'i: 'a, 'a> TypeCheck<'i, 'a> for uir::Term<'i> {
                 )
             }
             uir::RawTerm::TyApp { abs, arg } => {
-                let (abs, abs_type) = abs.type_check(ctx)?;
+                let arg = arg.eval(ctx)?;
+
+                let check_abs = check_type.take().map(|check_type| {
+                    ctx.intern(Type::TyAbs {
+                        name: "$",
+                        bounds: TyBounds {
+                            upper: Some(arg),
+                            lower: Some(arg),
+                        },
+                        result: check_type,
+                    })
+                });
+
+                let (abs, abs_type) = abs.type_check(check_abs, ctx)?;
                 let WithInfo(_info, abs) = *abs;
 
-                let arg = arg.eval(ctx)?;
                 let Type::TyAbs {
                     name: _,
                     bounds,
                     result,
                 } = abs_type
                 else {
-                    // TODO
                     return Err(format!(
                         "cannot apply a type argument to type: {abs_type}",
                         abs_type = abs_type.display(ctx)?
@@ -250,96 +384,228 @@ impl<'i: 'a, 'a> TypeCheck<'i, 'a> for uir::Term<'i> {
                 let ty = result.substitute_ty_var(arg, ctx);
                 (abs, ty)
             }
-            uir::RawTerm::Var(index) => (
-                tir::RawTerm::Var(*index),
-                ctx.get_var_ty(*index).ok_or_else(|| {
+            uir::RawTerm::Var(index) => {
+                let ty = ctx.get_var_ty(*index).ok_or_else(|| {
                     format!("illegal failure: variable index not found: {index:?}\n")
-                })?,
-            ),
-            uir::RawTerm::Enum(enum_type, label) => {
-                let enum_type = enum_type.eval(ctx)?;
+                })?;
 
-                let Type::Enum(variants) = enum_type else {
-                    // TODO
-                    return Err(format!(
-                        "cannot construct an enum with a non-enum type: {enum_type}",
-                        enum_type = enum_type.display(ctx)?
+                if let Some(check_type) = check_type.take() {
+                    check_subtype(check_type, ty, ctx).map_err(try_prepend(|| {
+                        Ok(format!(
+                            "expected: {}\n\
+                            got:      {}",
+                            check_type.display(ctx)?,
+                            ty.display(ctx)?,
+                        ))
+                    }))?;
+                }
+
+                (tir::RawTerm::Var(*index), ty)
+            }
+            uir::RawTerm::Enum(arg_type, label) => {
+                let arg_type = arg_type.eval(ctx)?;
+
+                if let Some(check_type) = check_type.take() {
+                    let Type::Arr {
+                        arg: check_arg,
+                        result: check_result,
+                    } = check_type
+                    else {
+                        return Err(format!(
+                            "expected: {}\n\
+                            found an enum constructor (a function)",
+                            check_type.display(ctx)?
+                        ));
+                    };
+                    let Type::Enum(check_variants) = check_result.upper_concrete(ctx)? else {
+                        return Err(format!(
+                            "expected: {}\n\
+                            found an enum constructor (a function that returns an enum)",
+                            check_type.display(ctx)?
+                        ));
+                    };
+
+                    let Some(check_variant_type) = check_variants.0.get(label) else {
+                        return Err(format!(
+                            "expected enum type does not contain label '{label}': {}",
+                            check_type.display(ctx)?
+                        ));
+                    };
+
+                    if let Some(arg_type) = arg_type {
+                        check_subtype(arg_type, check_arg, ctx)?;
+                    }
+
+                    let result = ctx.intern(Type::Enum(
+                        std::iter::once((*label, *check_variant_type)).collect(),
                     ));
-                };
-                let Some(variant_type) = variants.0.get(label) else {
-                    // TODO
+
+                    check_subtype(check_result, result, ctx)
+                        .map_err(prepend(|| "incorrect enum result type:\n"))?;
+
+                    (
+                        tir::RawTerm::Enum(*label),
+                        ctx.intern(Type::Arr {
+                            arg: check_variant_type,
+                            result,
+                        }),
+                    )
+                } else if let Some(arg_type) = arg_type {
+                    let result =
+                        ctx.intern(Type::Enum(std::iter::once((*label, arg_type)).collect()));
+                    (
+                        tir::RawTerm::Enum(*label),
+                        ctx.intern(Type::Arr {
+                            arg: arg_type,
+                            result,
+                        }),
+                    )
+                } else {
                     return Err(format!(
-                        "enum type does not contain label '{label}': {enum_type}",
-                        enum_type = enum_type.display(ctx)?
+                        "type inference error: cannot infer type of enum constructor with label: '{label}'",
                     ));
-                };
-                (
-                    tir::RawTerm::Enum(*label),
-                    ctx.intern(Type::Arr {
-                        arg: variant_type,
-                        result: enum_type,
-                    }),
-                )
+                }
             }
             uir::RawTerm::Match(enum_type, arms) => {
                 let enum_type = enum_type.eval(ctx)?;
-                let Type::Enum(variants) = enum_type else {
-                    // TODO
-                    return Err(format!(
-                        "cannot match on a non-enum type: {enum_type}",
-                        enum_type = enum_type.display(ctx)?
-                    ));
+
+                let (enum_type, check_result) = if let Some(check_type) = check_type.take() {
+                    let Type::Arr { arg, result } = check_type else {
+                        return Err(format!(
+                            "expected: {}\n\
+                            found a match expression (a function)",
+                            check_type.display(ctx)?
+                        ));
+                    };
+                    if let Some(enum_type) = enum_type {
+                        check_subtype(enum_type, arg, ctx)
+                            .map_err(prepend(|| "incorrect match arm type:\n"))?;
+                    }
+
+                    (
+                        enum_type.or(arg.upper_concrete(ctx)?.not_never()),
+                        result.upper_concrete(ctx)?.not_any(),
+                    )
+                } else {
+                    (enum_type, None)
                 };
 
-                let (arms, result_types): (HashMap<_, _>, Vec<_>) = arms
-                    .iter()
-                    .map(|(label, func)| -> Result<_, TypeCheckError> {
-                        let (func, func_type) = func.type_check(ctx)?;
-                        // check dead branches
-                        let Some(variant_type) = variants.0.get(label) else {
-                            // TODO
-                            return Err(format!(
-                                "enum type does not contain label '{label}': {enum_type}",
-                                enum_type = enum_type.display(ctx)?
-                            ));
-                        };
-                        let Type::Arr {
-                            arg: func_arg_type,
-                            result: func_result_type,
-                        } = func_type
-                        else {
-                            // TODO
-                            return Err(format!(
-                                "match arm must be a function type: {func_type}",
-                                func_type = func_type.display(ctx)?
-                            ));
-                        };
-                        check_subtype(func_arg_type, variant_type, ctx)
-                            .map_err(prepend(|| "incorrect match arm type:\n"))?;
-                        Ok(Some(((*label, func), *func_result_type)))
-                    })
-                    .filter_map_ok(|o| o)
-                    .try_collect()?;
+                if let Some(enum_type) = enum_type {
+                    let Type::Enum(variants) = enum_type else {
+                        return Err(format!(
+                            "cannot match on a non-enum type: {enum_type}",
+                            enum_type = enum_type.display(ctx)?
+                        ));
+                    };
 
-                variants.0.iter().try_for_each(|(label, _)| {
-                    if arms.contains_key(label) {
-                        Ok(())
-                    } else {
-                        // TODO
-                        Err(format!("match missing arm with label '{label}'"))
-                    }
-                })?;
-                (
-                    tir::RawTerm::Match(arms),
-                    ctx.intern(Type::Arr {
-                        arg: enum_type,
-                        result: join(result_types, ctx)?,
-                    }),
-                )
+                    let (arms, result_types): (HashMap<_, _>, Vec<_>) = arms
+                        .iter()
+                        .map(|(label, func)| -> Result<_, TypeCheckError> {
+                            // check dead branches
+                            let Some(variant_type) = variants.0.get(label) else {
+                                return Err(format!(
+                                    "enum type does not contain label '{label}': {enum_type}",
+                                    enum_type = enum_type.display(ctx)?
+                                ));
+                            };
+
+                            let check_func = check_result.map(|check_result| {
+                                ctx.intern(Type::Arr {
+                                    arg: variant_type,
+                                    result: check_result,
+                                })
+                            });
+
+                            let (func, func_type) = func.type_check(check_func, ctx)?;
+
+                            let Type::Arr {
+                                arg: func_arg,
+                                result: func_result,
+                            } = func_type
+                            else {
+                                return Err(format!(
+                                    "match arm must be a function type: {func_type}",
+                                    func_type = func_type.display(ctx)?
+                                ));
+                            };
+                            check_subtype(func_arg, variant_type, ctx)
+                                .map_err(prepend(|| "incorrect match arm type:\n"))?;
+
+                            Ok(Some(((*label, func), *func_result)))
+                        })
+                        .filter_map_ok(|o| o)
+                        .try_collect()?;
+
+                    variants.0.iter().try_for_each(|(label, _)| {
+                        if arms.contains_key(label) {
+                            Ok(())
+                        } else {
+                            Err(format!("match missing arm with label '{label}'"))
+                        }
+                    })?;
+                    (
+                        tir::RawTerm::Match(arms),
+                        ctx.intern(Type::Arr {
+                            arg: enum_type,
+                            result: join(result_types, ctx)?,
+                        }),
+                    )
+                } else {
+                    let (arms, variants, result_types): (HashMap<_, _>, _, Vec<_>) = arms
+                        .iter()
+                        .map(|(label, func)| -> Result<_, TypeCheckError> {
+                            let (func, func_type) = func.type_check(None, ctx)?;
+
+                            let Type::Arr {
+                                arg: func_arg,
+                                result: func_result,
+                            } = func_type
+                            else {
+                                return Err(format!(
+                                    "match arm must be a function type: {func_type}",
+                                    func_type = func_type.display(ctx)?
+                                ));
+                            };
+
+                            Ok(Some(((*label, func), (*label, *func_arg), *func_result)))
+                        })
+                        .filter_map_ok(|o| o)
+                        .try_collect()?;
+                    (
+                        tir::RawTerm::Match(arms),
+                        ctx.intern(Type::Arr {
+                            arg: ctx.intern(Type::Enum(variants)),
+                            result: join(result_types, ctx)?,
+                        }),
+                    )
+                }
             }
             uir::RawTerm::Tuple(elems) => {
-                let (elems, types): (Vec<_>, Vec<_>) =
-                    elems.iter().map(|e| e.type_check(ctx)).try_collect()?;
+                let check_elems = check_type
+                    .take()
+                    .map(|check_type| {
+                        let Type::Tuple(check_elems) = check_type else {
+                            return Err(format!(
+                                "expected: {}\n\
+                                got a tuple type",
+                                check_type.display(ctx)?
+                            ));
+                        };
+                        let len = elems.len();
+                        let check_len = check_elems.len();
+                        if len != check_len {
+                            return Err(format!(
+                                "expected: {}\n\
+                                got tuple with {len} elements",
+                                check_type.display(ctx)?
+                            ));
+                        }
+                        Ok(check_elems.iter().copied())
+                    })
+                    .transpose()?;
+                let (elems, types): (Vec<_>, Vec<_>) = maybe_zip_eq(elems, check_elems)
+                    .map(|(elem, check_elem)| elem.type_check(check_elem, ctx))
+                    .try_collect()?;
                 (
                     tir::RawTerm::Tuple(elems.into_boxed_slice()),
                     ctx.intern(Type::Tuple(types.into_boxed_slice())),
@@ -348,37 +614,24 @@ impl<'i: 'a, 'a> TypeCheck<'i, 'a> for uir::Term<'i> {
             uir::RawTerm::Bool(b) => (tir::RawTerm::Bool(*b), ctx.intern(Type::Bool)),
         };
 
+        // if we don't explicity check above (using `.take()`), we do a basic subtype check here
+        if let Some(check_type) = check_type.take() {
+            check_subtype(check_type, ty, ctx).map_err(try_prepend(|| {
+                Ok(format!(
+                    "expected: {}\n\
+                    got:      {}",
+                    check_type.display(ctx)?,
+                    ty.display(ctx)?,
+                ))
+            }))?;
+        }
+
         Ok((WithInfo(*info, term), ty))
     }
 }
 
 fn ty_eq<'a>(ty1: InternedType<'a>, ty2: InternedType<'a>) -> bool {
     std::ptr::eq(ty1, ty2)
-}
-
-impl<'a> Type<'a> {
-    fn get_function_result_type(
-        &'a self,
-        ctx: &Context<'a, '_>,
-    ) -> Result<&'a Self, TypeCheckError> {
-        match self {
-            Type::Arr { arg: _, result } => Ok(result),
-            Type::TyVar(level) => ctx
-                .get_ty_var_unwrap(*level)?
-                .1
-                .upper
-                .map(|t| t.get_function_result_type(ctx))
-                .unwrap_or(Err(format!(
-                    "expected function type but got a type arg without an upper bound:\n{}",
-                    self.display(ctx)?
-                ))),
-            Type::Never => Ok(self),
-            _ => Err(format!(
-                "expected function type\ngot: {}",
-                self.display(ctx)?
-            )),
-        }
-    }
 }
 
 impl<'a> Type<'a> {
@@ -398,7 +651,6 @@ impl<'a> Type<'a> {
                     let st_len = st_elems.len();
                     let ty_len = ty_elems.len();
                     if st_len != ty_len {
-                        // TODO
                         return Err(format!(
                             "destructured tuple has {st_len} elements\nwhile it's type has {ty_len} elements"
                         ));
@@ -408,7 +660,6 @@ impl<'a> Type<'a> {
                 }
 
                 (ArgStructure::Tuple(_), ty) => {
-                    // TODO
                     return Err(format!(
                         "cannot tuple-destructure value of type {ty}",
                         ty = ty.display(ctx)?
@@ -476,6 +727,54 @@ impl<'a> Type<'a> {
 
     fn substitute_ty_var(&'a self, ty: &'a Self, ctx: &Context<'a, '_>) -> &'a Self {
         self.substitute_ty_var_rec(ctx.next_ty_var_level(), ty, ctx)
+    }
+
+    // TODO: maybe ensure type safety by Type::Concrete(ConcreteType::{Arr, Enum, ...})
+    /// Get the minimal concrete supertype
+    fn upper_concrete(&'a self, ctx: &Context<'a, '_>) -> Result<&'a Self, TypeCheckError> {
+        match self {
+            Type::TyVar(level) => ctx
+                .get_ty_var_unwrap(*level)?
+                .1
+                .upper
+                .unwrap_or(ctx.intern(Type::Any))
+                .upper_concrete(ctx),
+            Type::TyAbs { .. }
+            | Type::Arr { .. }
+            | Type::Enum(..)
+            | Type::Tuple(..)
+            | Type::Bool
+            | Type::Any
+            | Type::Never => Ok(self),
+        }
+    }
+
+    /// `Some()` only if not `Type::Any`
+    fn not_any(&'a self) -> Option<&'a Self> {
+        match self {
+            Type::Any => None,
+            Type::TyAbs { .. }
+            | Type::TyVar { .. }
+            | Type::Arr { .. }
+            | Type::Enum(..)
+            | Type::Tuple(..)
+            | Type::Bool
+            | Type::Never => Some(self),
+        }
+    }
+
+    /// `Some()` only if not `Type::Never`
+    fn not_never(&'a self) -> Option<&'a Self> {
+        match self {
+            Type::Never => None,
+            Type::TyAbs { .. }
+            | Type::TyVar { .. }
+            | Type::Arr { .. }
+            | Type::Enum(..)
+            | Type::Tuple(..)
+            | Type::Bool
+            | Type::Any => Some(self),
+        }
     }
 }
 

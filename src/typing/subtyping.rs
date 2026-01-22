@@ -2,7 +2,7 @@ use itertools::zip_eq;
 
 use crate::typing::{
     Context, InternedType, TypeCheckError, prepend, try_prepend,
-    ty::{TyDisplay, Type},
+    ty::{TyBounds, TyDisplay, Type},
     ty_eq,
 };
 
@@ -32,39 +32,19 @@ pub(super) fn check_subtype<'a>(
             },
         ) => {
             // subtype bounds must enclose supertype bounds
-            if let Some(upper_sub) = bounds_sub.upper {
-                let upper_super = bounds_super.upper.unwrap_or_else(|| ctx.intern(Type::Any));
-                check_subtype(upper_sub, upper_super, ctx)
-            } else {
-                Ok(())
-            }
-            .map_err(prepend(|| {
-                "subtype upper bound must be a supertype of supertype upper bound".to_string()
-            }))
-            .and_then(|()| {
-                if let Some(lower_sub) = bounds_sub.lower {
-                    let lower_super = bounds_super
-                        .lower
-                        .unwrap_or_else(|| ctx.intern(Type::Never));
-                    check_subtype(lower_super, lower_sub, ctx)
-                } else {
-                    Ok(())
-                }
+            bounds_sub
+                .check_encloses(bounds_super, ctx)
                 .map_err(prepend(|| {
-                    "subtype lower bound must be a subtype of supertype lower bound".to_string()
+                    "bounds of subtype type arg must enclose those of the supertype type arg:"
+                        .to_string()
                 }))
-            })
-            .map_err(prepend(|| {
-                "bounds of subtype type arg must enclose those of the supertype type arg:"
-                    .to_string()
-            }))
-            .and_then(|()| {
-                check_subtype(
-                    supertype,
-                    subtype,
-                    &ctx.push_ty_var(std::cmp::min(name_super, name_sub), *bounds_super),
-                )
-            })
+                .and_then(|()| {
+                    check_subtype(
+                        supertype,
+                        subtype,
+                        &ctx.push_ty_var(std::cmp::min(name_super, name_sub), *bounds_super),
+                    )
+                })
         }
         (
             Type::TyAbs {
@@ -176,4 +156,27 @@ pub(super) fn check_subtype<'a>(
             subtype.display(ctx)?
         ))
     }))
+}
+
+impl<'a> TyBounds<'a> {
+    pub(super) fn check_encloses(
+        &self,
+        inner: &Self,
+        ctx: &Context<'a, '_>,
+    ) -> Result<(), TypeCheckError> {
+        if let Some(upper_self) = self.upper {
+            let upper_inner = inner.upper.unwrap_or_else(|| ctx.intern(Type::Any));
+            check_subtype(upper_self, upper_inner, ctx).map_err(prepend(|| {
+                "outer upper bound must be a supertype of inner upper bound".to_string()
+            }))?;
+        }
+
+        if let Some(lower_self) = self.lower {
+            let lower_inner = inner.lower.unwrap_or_else(|| ctx.intern(Type::Never));
+            check_subtype(lower_inner, lower_self, ctx).map_err(prepend(|| {
+                "outer lower bound must be a subtype of inner lower bound".to_string()
+            }))?;
+        }
+        Ok(())
+    }
 }

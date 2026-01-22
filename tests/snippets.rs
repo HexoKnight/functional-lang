@@ -126,7 +126,7 @@ fn basic_abs() {
     evaluate_check_type(r" \x:bool x ", "bool -> bool");
     evaluate_check_type(r"\x:bool \ y : bool x", "bool -> bool -> bool");
 
-    parse_failure(r"\x x");
+    type_check_failure(r"\x x");
     parse_failure(r"\x:bool");
 
     validate_failure(r"\x:bool y");
@@ -228,50 +228,47 @@ fn enums() {
         "enum {none: (), some: bool} -> enum {none: (), some: bool}",
     );
 
-    parse_failure(r"\enum:() ()");
-    parse_failure(r"enum enum {some:bool,none:()}");
-    type_check_failure(r"enum enum {some:bool,none:()} otherlabel");
+    parse_failure(r"\enum ()");
+    parse_failure(r"enum: enum {some:bool,none:()}");
+    type_check_failure(r"enum: bool otherlabel ()");
     evaluate_eq(
-        r"enum enum {some:bool,none:()} some",
-        r"enum enum {some:bool        } some",
+        r"enum some .\x: bool -> enum {some:bool,none:()} x",
+        r"enum some .\x: bool -> enum {some:bool        } x",
     );
 
     evaluate_check_type(
-        r"(\x: bool -> enum { some: bool, none: () } x) (enum enum {some:bool,none:()} some)",
+        r"(\x: bool -> enum { some: bool, none: () } x) (enum some)",
         "bool -> enum {none: (), some: bool}",
     );
 
     evaluate_check_type(
-        r"(\x: bool -> enum { some: bool, none: () } x) (enum enum {some:bool,none:()} some)",
+        r"(\x: bool -> enum { some: bool, none: () } x) (enum some)",
         "bool -> enum {none: (), some: bool}",
     );
 
-    evaluate_check_type(r"match enum {} {}", "enum {} -> !");
-    validate_failure(r"match enum {none:(),none:()} { none\():()()}");
-    validate_failure(r"match enum {none:()} { none\():()(), none\():()()}");
+    evaluate_check_type(r"match {}", "enum {} -> !");
+    validate_failure(r"match: enum {none:(),none:()} { none\():()()}");
+    validate_failure(r"match { none\():()(), none\():()()}");
 
     type_check_failure(
-        r"match enum {some:bool,none:()} {
+        r"match: enum {some:bool,none:()} {
             none\x:()x,
         }",
     );
     type_check_failure(
-        r"match enum {some:bool,none:()} {
+        r"match: enum {some:bool,none:()} {
             hello(\x:bool ()),
             none(\():() ()),
         }",
     );
     type_check_failure(
-        r"match enum {some:bool,none:()} {
+        r"match: enum {some:bool,none:()} {
             some(\x:bool x),
             none(\():() ()),
         }",
     );
     evaluate_check_type(
-        r"match enum {
-            some: bool,
-            none: (),
-        } {
+        r"match {
             some \x:bool x,
             none \():() false,
         }",
@@ -287,31 +284,24 @@ fn enums() {
             }
             -> enum { a:(), b:bool }
         x)
-        match enum {
-            onlya: enum { a:() },
-            none: enum { },
-            onlyb: enum { b:bool },
-        } {
+        match {
             onlya \x: enum { a:() } x,
             none  \x: enum { } x,
             onlyb \x: enum { b:bool } x,
         }
         (enum
-            enum {
-                onlyb: enum { b:bool },
-            }
-            onlyb (enum enum { b:bool } b false)
+            onlyb (enum b false)
         )",
-        r"enum enum { b:bool } b false",
+        r"enum: bool b false",
     );
 
-    validate_failure("match enum{} { a notfound }");
+    validate_failure("match: enum{} { a notfound }");
 }
 
 #[test]
 fn subtyping() {
     evaluate_check_type(
-        r"(). enum enum {a:()} a .\x:enum{a:(), new:()} x",
+        r"(). enum a .\x:enum{a:(), new:()} x",
         "enum {a: (), new: ()}",
     );
     evaluate_check_type(
@@ -327,7 +317,7 @@ fn subtyping() {
 #[test]
 fn never() {
     evaluate_check_type(
-        r"\never:enum{} never.match enum{} {} .\actualnever:! actualnever",
+        r"\never:enum{} never.match {} .\actualnever:! actualnever",
         "enum {} -> !",
     );
     evaluate_check_type(
@@ -339,7 +329,7 @@ fn never() {
 #[test]
 fn any() {
     evaluate_check_type(
-        r"match enum{a:(), b:bool} {a\x:_ x, b\x:_ x}",
+        r"match: enum{a:(), b:bool} {a\x:_ x, b\x:_ x}",
         "enum {a: (), b: bool} -> _",
     );
 
@@ -351,7 +341,7 @@ fn any() {
 fn ty_abs() {
     evaluate_check_type(r"?T \x:T x", "[T] T -> T");
     evaluate_check_type(
-        r"?T<enum{a:()} \x:T x.match enum {a:()} {a\():()()}",
+        r"?T<enum{a:()} \x:T x.match {a\():()()}",
         "[T <enum {a: ()}] T -> ()",
     );
 
@@ -379,11 +369,11 @@ fn ty_app() {
 
     evaluate_check_type(r"(?T<enum{a:()} \x:T x) [enum{}]", "enum {} -> enum {}");
     evaluate_check_type(
-        r"?T<enum{a:()} enum enum {e:T} e",
+        r"?T<enum{a:()} enum: T e",
         "[T <enum {a: ()}] T -> enum {e: T}",
     );
     evaluate_check_type(
-        r"(?T<enum{a:()} enum enum {e:T} e) [enum{}]",
+        r"(?T<enum{a:()} enum: T e) [enum{}]",
         "enum {} -> enum {e: enum {}}",
     );
 
@@ -408,10 +398,54 @@ fn ty_app() {
     evaluate_check_type(r"?A (?B (?C \x:A x)[B])[bool]", "[A] A -> A");
 
     evaluate_check_type(
-        r"match enum {a:(),b:()} {
+        r"match {
             a\():() ?A<bool \a:A (a, true),
             b\():() ?B>bool \b:B (b, false),
         }",
         "enum {a: (), b: ()} -> [A <bool >bool] A -> (A, bool)",
+    );
+}
+
+#[test]
+fn type_inference() {
+    evaluate_check_type(r"(\e e.match {}) .\x:enum{} -> bool x", "enum {} -> bool");
+    evaluate_check_type(r"match {} .\x:enum{} -> bool x", "enum {} -> bool");
+
+    evaluate_check_type(
+        r"(\op: (bool, bool -> ()) -> () op (false, \x ())) (\(b, f) f b)",
+        "()",
+    );
+    evaluate_check_type(
+        r"
+        (\op: enum {a:(), b:()} -> ()
+            op (enum a ())
+        )
+        (\e
+            (\() ()).
+                \id:()->()
+
+            (e.match {a id, b id}).
+                \():()
+
+            e.match {a id, b id, c id}
+        )",
+        "()",
+    );
+    evaluate_check_type(
+        r"
+        (\() ()). \id:()->()
+        (\op: enum {a:(), b:()} -> ()
+            op (enum a ())
+        )
+        match: enum{a:(),b:(),c:()} {a id, b id, c id}",
+        "()",
+    );
+    type_check_failure(
+        r"
+        (\() ()). \id:()->()
+        (\op: enum {a:(), b:()} -> ()
+            op (enum a ())
+        )
+        match {a id, b id, c id}",
     );
 }

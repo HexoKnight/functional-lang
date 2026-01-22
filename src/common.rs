@@ -1,5 +1,7 @@
 use std::{collections::HashMap, fmt::Debug, hash::Hash};
 
+use itertools::{Either, zip_eq};
+
 #[derive(Clone)]
 pub struct WithInfo<I, T>(pub I, pub T);
 
@@ -58,4 +60,15 @@ where
     hashmap1
         .iter()
         .filter_map(move |(k, v1)| hashmap2.get(k).map(|v2| (k, merge(v1, v2))))
+}
+
+pub(crate) fn maybe_zip_eq<T1, T2>(
+    iter1: impl IntoIterator<Item = T1>,
+    iter2: Option<impl IntoIterator<Item = T2>>,
+) -> impl Iterator<Item = (T1, Option<T2>)> {
+    if let Some(iter2) = iter2 {
+        Either::Left(zip_eq(iter1, iter2.into_iter().map(Some)))
+    } else {
+        Either::Right(iter1.into_iter().map(|t1| (t1, None)))
+    }
 }

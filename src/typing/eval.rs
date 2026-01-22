@@ -75,3 +75,11 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::TyBounds<'i> {
         Ok(TyBounds { upper, lower })
     }
 }
+
+impl<'i: 'a, 'a, T: TyEval<'i, 'a>> TyEval<'i, 'a> for Option<T> {
+    type Evaled = Option<T::Evaled>;
+
+    fn eval(&self, ctx: &Context<'a, '_>) -> Result<Self::Evaled, TypeCheckError> {
+        self.as_ref().map(|t| t.eval(ctx)).transpose()
+    }
+}

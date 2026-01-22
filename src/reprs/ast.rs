@@ -6,7 +6,7 @@ pub type Term<'i> = WithInfo<Span<'i>, RawTerm<'i>>;
 pub enum RawTerm<'i> {
     Abs {
         arg: Assignee<'i>,
-        arg_type: Type<'i>,
+        arg_type: Option<Type<'i>>,
 
         body: Box<Term<'i>>,
     },
@@ -28,8 +28,8 @@ pub enum RawTerm<'i> {
 
     Var(Ident<'i>),
 
-    Enum(Type<'i>, Ident<'i>),
-    Match(Type<'i>, Box<[(Ident<'i>, Term<'i>)]>),
+    Enum(Option<Type<'i>>, Ident<'i>),
+    Match(Option<Type<'i>>, Box<[(Ident<'i>, Term<'i>)]>),
 
     Tuple(Box<[Term<'i>]>),
 

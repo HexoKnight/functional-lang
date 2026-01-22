@@ -6,10 +6,19 @@ use std::{
 use derive_where::derive_where;
 use itertools::Itertools;
 
-#[derive_where(Eq, PartialEq; HashMap<K, V>)]
+#[derive_where(Default, Eq, PartialEq; HashMap<K, V>)]
 pub struct HashedHashMap<K, V>(pub HashMap<K, V>);
 
 crate::newtype_derive!([HashedHashMap<K, V>(HashMap<K, V>)] Debug);
+
+impl<K, V> Extend<(K, V)> for HashedHashMap<K, V>
+where
+    HashMap<K, V>: Extend<(K, V)>,
+{
+    fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
+        self.0.extend(iter);
+    }
+}
 
 impl<K, V> FromIterator<(K, V)> for HashedHashMap<K, V>
 where

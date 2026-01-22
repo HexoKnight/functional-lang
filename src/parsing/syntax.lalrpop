@@ -44,7 +44,7 @@ RawTerm: RawTerm<'input> = {
 }
 
 Abs: RawTerm<'input> = {
-    "\\" <arg:Assignee> ":" <arg_type:Type> <body:Box<Term>> => RawTerm::Abs { arg, arg_type, body },
+    "\\" <arg:Assignee> <arg_type:(":" <Type>)?> <body:Box<Term>> => RawTerm::Abs { arg, arg_type, body },
     "?" <arg:Ident> <bounds:TyBounds> <body:Box<Term>> => RawTerm::TyAbs { arg, bounds, body },
 }
 
@@ -69,8 +69,8 @@ SimpleTerm: RawTerm<'input> = {
 
     Ident => RawTerm::Var(<>),
 
-    "enum" <Type> <Ident> => RawTerm::Enum(<>),
-    "match" <ty:Type> "{" <arms:CommaSep<(Ident Term)>> "}" => RawTerm::Match(ty, arms.into_boxed_slice()),
+    "enum" <(":" <Type>)?> <Ident> => RawTerm::Enum(<>),
+    "match" <ty:(":" <Type>)?> "{" <arms:CommaSep<(Ident Term)>> "}" => RawTerm::Match(ty, arms.into_boxed_slice()),
 
     Tuple<Term> => RawTerm::Tuple(<>),
 
