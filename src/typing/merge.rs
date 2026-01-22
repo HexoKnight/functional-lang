@@ -5,7 +5,7 @@ use crate::{
     typing::{
         Context, InternedType, TypeCheckError,
         subtyping::check_subtype,
-        ty::{TyBounds, Type},
+        ty::{TyBounds, TyDisplay, Type},
         ty_eq,
     },
 };

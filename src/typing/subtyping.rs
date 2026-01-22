@@ -1,6 +1,10 @@
 use itertools::zip_eq;
 
-use crate::typing::{Context, InternedType, TypeCheckError, prepend, try_prepend, ty::Type, ty_eq};
+use crate::typing::{
+    Context, InternedType, TypeCheckError, prepend, try_prepend,
+    ty::{TyDisplay, Type},
+    ty_eq,
+};
 
 // TODO: improve error messages by specifying which type is 'expected'
 /// # Errors

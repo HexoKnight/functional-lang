@@ -41,31 +41,31 @@ pub struct TyBounds<'ctx> {
     pub lower: Option<TypeRef<'ctx>>,
 }
 
-impl<'ctx> Type<'ctx> {
-    pub fn write_display(
-        &self,
-        ctx: &Context<'ctx, '_>,
-        w: &mut String,
-    ) -> Result<(), TypeCheckError> {
+pub trait TyDisplay<'ctx> {
+    fn write_display(&self, ctx: &Context<'ctx, '_>, w: &mut String) -> Result<(), TypeCheckError>;
+
+    fn display(&self, ctx: &Context<'ctx, '_>) -> Result<String, TypeCheckError> {
+        let mut string = String::new();
+        self.write_display(ctx, &mut string)?;
+        Ok(string)
+    }
+
+    fn is_empty(&self, ctx: &Context<'ctx, '_>) -> Result<bool, TypeCheckError>;
+}
+
+impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
+    fn write_display(&self, ctx: &Context<'ctx, '_>, w: &mut String) -> Result<(), TypeCheckError> {
         match self {
             Type::TyAbs {
                 name,
-                bounds:
-                    bounds @ TyBounds {
-                        upper,
-                        lower: bottom,
-                    },
+                bounds,
                 result,
             } => {
                 w.push('[');
                 w.push_str(name);
-                if let Some(upper) = upper {
-                    w.push_str(" <");
-                    upper.write_display(ctx, w)?;
-                }
-                if let Some(bottom) = bottom {
-                    w.push_str(" >");
-                    bottom.write_display(ctx, w)?;
+                if !bounds.is_empty(ctx)? {
+                    w.push(' ');
+                    bounds.write_display(ctx, w)?;
                 }
                 w.push_str("] ");
                 result.write_display(&ctx.push_ty_var(name, *bounds), w)?;
@@ -125,9 +125,32 @@ impl<'ctx> Type<'ctx> {
         Ok(())
     }
 
-    pub fn display(&self, ctx: &Context<'ctx, '_>) -> Result<String, TypeCheckError> {
-        let mut string = String::new();
-        self.write_display(ctx, &mut string)?;
-        Ok(string)
+    fn is_empty(&self, _ctx: &Context<'ctx, '_>) -> Result<bool, TypeCheckError> {
+        Ok(false)
+    }
+}
+
+impl<'ctx> TyDisplay<'ctx> for TyBounds<'ctx> {
+    fn write_display(&self, ctx: &Context<'ctx, '_>, w: &mut String) -> Result<(), TypeCheckError> {
+        let Self { upper, lower } = self;
+
+        if let Some(upper) = upper {
+            w.push('<');
+            upper.write_display(ctx, w)?;
+        }
+        if let Some(lower) = lower {
+            if upper.is_some() {
+                w.push(' ');
+            }
+            w.push('>');
+            lower.write_display(ctx, w)?;
+        }
+        Ok(())
+    }
+
+    fn is_empty(&self, _ctx: &Context<'ctx, '_>) -> Result<bool, TypeCheckError> {
+        let Self { upper, lower } = self;
+
+        Ok(upper.is_none() && lower.is_none())
     }
 }
