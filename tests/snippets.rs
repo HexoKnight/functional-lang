@@ -12,7 +12,7 @@ mod utils {
     };
 
     #[track_caller]
-    pub fn parse_success(src: &str) -> Term<'_> {
+    fn parse_success(src: &str) -> Term<'_> {
         match Parser::default().parse(src) {
             Ok(o) => o,
             Err(e) => panic!("parse failure:\n'{}'\n{}", src, e),
@@ -28,7 +28,7 @@ mod utils {
     }
 
     #[track_caller]
-    pub fn validate_success(src: &str) -> untyped_ir::Term<'_> {
+    fn validate_success(src: &str) -> untyped_ir::Term<'_> {
         let ast = parse_success(src);
         match validate(&ast) {
             Ok(o) => o,
@@ -46,7 +46,7 @@ mod utils {
     }
 
     #[track_caller]
-    pub fn type_check_success(src: &str) -> (typed_ir::Term<'_>, String) {
+    fn type_check_success(src: &str) -> (typed_ir::Term<'_>, String) {
         let untyped_ir = validate_success(src);
         match type_check(&untyped_ir) {
             Ok(o) => o,
@@ -64,7 +64,7 @@ mod utils {
     }
 
     #[track_caller]
-    pub fn evaluate_success(src: &str) -> (Value<'_>, String) {
+    fn evaluate_success(src: &str) -> (Value<'_>, String) {
         let (typed_ir, ty) = type_check_success(src);
         match evaluate(&typed_ir) {
             Ok(o) => (o, ty),
@@ -112,7 +112,7 @@ mod utils {
 
 #[test]
 fn comments() {
-    evaluate_success(r"\x:bool x // comment");
+    evaluate_eq(r"\x:bool x // comment", r"\x:bool x");
     #[rustfmt::skip]
     parse_failure(r"
         \
@@ -246,7 +246,7 @@ fn enums() {
         "bool -> enum {none: (), some: bool}",
     );
 
-    evaluate_success(r"match enum {} {}");
+    evaluate_check_type(r"match enum {} {}", "enum {} -> !");
     validate_failure(r"match enum {none:(),none:()} { none\():()()}");
     validate_failure(r"match enum {none:()} { none\():()(), none\():()()}");
 
@@ -310,9 +310,18 @@ fn enums() {
 
 #[test]
 fn subtyping() {
-    evaluate_success(r"(). enum enum {a:()} a .\x:enum{a:(), new:()} x");
-    evaluate_success(r"\x:(enum{}, ()) x.\x:(enum{new:()}, ()) x");
-    evaluate_success(r"\x:enum{a:()} -> () x.\x:enum{} -> () x");
+    evaluate_check_type(
+        r"(). enum enum {a:()} a .\x:enum{a:(), new:()} x",
+        "enum {a: (), new: ()}",
+    );
+    evaluate_check_type(
+        r"\x:(enum{}, ()) x.\x:(enum{new:()}, ()) x",
+        "(enum {}, ()) -> (enum {new: ()}, ())",
+    );
+    evaluate_check_type(
+        r"\x:enum{a:()} -> () x.\x:enum{} -> () x",
+        "(enum {a: ()} -> ()) -> enum {} -> ()",
+    );
 }
 
 #[test]
@@ -389,8 +398,11 @@ fn ty_app() {
     );
 
     evaluate_check_type(r"?T<bool \x:T x.\x:bool x", "[T <bool] T -> bool");
-    type_check_failure(r"?T ?R   \t:T \f:T -> R (t, f t) .\x:(R, R) x");
-    evaluate_success(r"  ?T ?R>T \t:T \f:T -> R (t, f t) .\x:(R, R) x");
+    type_check_failure(r" ?T ?R   \t:T \f:T -> R (t, f t) .\x:(R, R) x");
+    #[rustfmt::skip]
+    evaluate_check_type(r"?T ?R>T \t:T \f:T -> R (t, f t) .\x:(R, R) x",
+        "[T] [R >T] T -> (T -> R) -> (R, R)",
+    );
 
     evaluate_check_type(r"?A (?B (?C \x:C x)[B])[bool]", "[A] bool -> bool");
     evaluate_check_type(r"?A (?B (?C \x:A x)[B])[bool]", "[A] A -> A");
