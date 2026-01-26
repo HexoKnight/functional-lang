@@ -146,7 +146,7 @@ fn merge<'a>(
                     )
                 } else if join {
                     return Err(format!(
-                        "cannot join tuples with different lengths:\n\
+                        "cannot {op} tuples with different lengths:\n\
                         tuple 1: {len1} elements: {ty1}\n\
                         tuple 2: {len2} elements: {ty2}",
                         ty1 = ty1.display(ctx)?,
@@ -172,7 +172,7 @@ fn merge<'a>(
                 _,
             ) => {
                 return Err(format!(
-                    "cannot join incompatible types:\n\
+                    "cannot {op} incompatible types:\n\
                     type 1: {ty1}\n\
                     type 2: {ty2}\n",
                     ty1 = ty1.display(ctx)?,
