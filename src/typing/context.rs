@@ -62,6 +62,46 @@ pub(super) trait TyVarContext<'a> {
     fn get_ty_vars(&self) -> impl Iterator<Item = (&'a str, Self::TyVar)>;
 }
 
+pub(super) struct MultiContext<TyArena = (), TyVar = ()>(pub TyArena, pub TyVar);
+
+impl<'a, TyArena, TyVar> TyArenaContext<'a> for MultiContext<TyArena, TyVar>
+where
+    TyArena: TyArenaContext<'a>,
+{
+    type Inner = TyArena::Inner;
+
+    fn get_inner(&self) -> Self::Inner {
+        self.0.get_inner()
+    }
+}
+impl<'a, TyArena, TyVar> TyVarContext<'a> for MultiContext<TyArena, TyVar>
+where
+    TyArena: Clone,
+    TyVar: TyVarContext<'a>,
+{
+    type TyVar = TyVar::TyVar;
+
+    fn push_ty_var(&self, ty_var_name: &'a str, ty_var: Self::TyVar) -> Self {
+        Self(self.0.clone(), self.1.push_ty_var(ty_var_name, ty_var))
+    }
+
+    fn get_ty_var(&self, level: Lvl) -> Option<(&'a str, Self::TyVar)> {
+        self.1.get_ty_var(level)
+    }
+
+    fn next_ty_var_level(&self) -> Lvl {
+        self.1.next_ty_var_level()
+    }
+
+    fn get_ty_vars(&self) -> impl Iterator<Item = (&'a str, Self::TyVar)> {
+        self.1.get_ty_vars()
+    }
+
+    fn get_ty_var_unwrap(&self, level: Lvl) -> Result<(&'a str, Self::TyVar), TypeCheckError> {
+        self.1.get_ty_var_unwrap(level)
+    }
+}
+
 #[must_use]
 #[derive(Clone)]
 pub(super) struct TyVarStack<'a, T>(Stack<(&'a str, T)>);

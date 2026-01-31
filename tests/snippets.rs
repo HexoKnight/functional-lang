@@ -394,6 +394,13 @@ fn ty_app() {
         "[T] [R >T] T -> (T -> R) -> (R, R)",
     );
 
+    evaluate_check_type(r"?T ?R>T \t:T t.\r:R r", "[T] [R >T] T -> R");
+    evaluate_check_type(
+        r"?A ?T<A ?R>A \t:T t.\a:A a.\r:R r",
+        "[A] [T <A] [R >A] T -> R",
+    );
+    evaluate_check_type(r"?A ?T<A ?R>A \t:T t.\r:R r", "[A] [T <A] [R >A] T -> R");
+
     evaluate_check_type(r"?A (?B (?C \x:C x)[B])[bool]", "[A] bool -> bool");
     evaluate_check_type(r"?A (?B (?C \x:A x)[B])[bool]", "[A] A -> A");
 
@@ -448,4 +455,89 @@ fn type_inference() {
         )
         match {a id, b id, c id}",
     );
+}
+
+#[test]
+fn type_arg_inference() {
+    evaluate_eq(
+        r"(?A \a a) .\id:[A]A->A \b:bool id [bool] b",
+        r"(?A \a a) .\id:[A]A->A \b:bool id        b",
+    );
+    evaluate_check_type(
+        r"(?A \a a) .\id:[A]A->A \b:bool id        b",
+        "bool -> bool",
+    );
+
+    evaluate_check_type(r"\id:[A]A->A id true", "([A] A -> A) -> bool");
+    evaluate_check_type(r"\x:bool \id:[A]A->A id x", "bool -> ([A] A -> A) -> bool");
+    type_check_failure(r"\x:! \id:[A]A->A id x");
+
+    evaluate_check_type(r"(?T \x:T x) true", "bool");
+    // may relax in the future
+    type_check_failure(r"(?T \x:bool x) true");
+
+    let uncurry = def(
+        "uncurry: [A] [B] [C] (A -> B -> C) -> ((A, B) -> C)",
+        r"?A ?B ?C \f \(a, b) f a b",
+    );
+
+    let k = def("K: [T] T -> () -> T", r"?T \x \() x");
+    let k2 = def("KK: [T] [U] T -> U -> T", r"?T ?U \x \u x");
+
+    let delay = def(
+        "delay: [A] [B] [C] (A -> B -> C) -> A -> B -> C",
+        r"?A ?B ?C \f \a \b f a b",
+    );
+
+    evaluate_check_type(
+        &wrapped(&[&uncurry, &k], r"(K [bool]).uncurry (K true (), ())"),
+        "bool",
+    );
+    type_check_failure(&wrapped(&[&delay, &k], r"delay K true ()"));
+    evaluate_check_type(&wrapped(&[&delay, &k], r"delay (K[bool]) true ()"), "bool");
+
+    evaluate_check_type(&wrapped(&[&k2], r"KK true ()"), "bool");
+
+    let map = def(
+        "map: [T] [R] (T -> R) -> enum {some:T,none:()} -> enum {some:R,none:()}",
+        r"
+        ?T ?R \f
+            match {
+                some(\t enum some (f t)),
+                none enum none,
+            }
+        ",
+    );
+
+    evaluate_check_type(
+        &wrapped(&[&map], r"map (\b:bool ())"),
+        "enum {none: (), some: bool} -> enum {none: (), some: ()}",
+    );
+
+    evaluate_check_type(
+        &wrapped(&[&map], r"?A map enum: A wrap"),
+        "[A] enum {none: (), some: A} -> enum {none: (), some: enum {wrap: A}}",
+    );
+
+    evaluate_check_type(
+        &wrapped(&[&map], r"?A map (enum wrap .\x:A->_ x)"),
+        "[A] enum {none: (), some: A} -> enum {none: (), some: _}",
+    );
+
+    evaluate_check_type(r"(?A \a:A a) true", "bool");
+    evaluate_check_type(
+        r"(\() ?A \a:A a) .\f: () -> bool -> bool f",
+        "() -> bool -> bool",
+    );
+
+    evaluate_check_type(
+        r"(?T \t t).\id:[T]T->T match {wrap id [bool]}",
+        "enum {wrap: bool} -> bool",
+    );
+    evaluate_check_type(
+        r"(?T \t t).\id:[T]T->T match {wrap id} .\x:enum{wrap:bool}->bool x",
+        "enum {wrap: bool} -> bool",
+    );
+    // inference is very local currently (app <-> match <-> id is 2 separations)
+    type_check_failure(r"(?T \t t).\id:[T]T->T match {wrap id} (enum wrap true)");
 }

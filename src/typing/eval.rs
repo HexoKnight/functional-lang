@@ -71,7 +71,7 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::TyBounds<'i> {
         let lower = lower.as_ref().map(|ty| ty.eval(ctx)).transpose()?;
         if let (Some(upper), Some(lower)) = (upper, lower) {
             // technically we don't really expect either but this is close enough
-            expect_type(upper, lower, true, ctx).map_err(prepend(
+            expect_type(upper, lower, true, false, ctx).map_err(prepend(
                 || "type bound error: upper bound must be supertype of lower bound",
             ))?;
         }

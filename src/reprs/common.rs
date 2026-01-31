@@ -67,4 +67,11 @@ impl Lvl {
     pub fn deeper(self) -> Self {
         Self(self.0 + 1)
     }
+
+    /// translate level by difference between other levels (shouldn't reach maximum)
+    /// returns None if the result is invalid (ie. negative level)
+    #[must_use]
+    pub fn translate(self, before: Self, after: Self) -> Option<Self> {
+        (self.0 + after.0).checked_sub(before.0).map(Self)
+    }
 }

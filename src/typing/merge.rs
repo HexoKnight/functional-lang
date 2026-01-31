@@ -45,10 +45,10 @@ fn merge<'a: 'inn, 'inn>(
             return Ok(ty1);
         }
         // TODO(proper errors): catch specifically subtyping errors
-        if expect_type(ty1, ty2, true, ctx).is_ok() {
+        if expect_type(ty1, ty2, true, false, ctx).is_ok() {
             return Ok(ty1);
         }
-        if expect_type(ty1, ty2, false, ctx).is_ok() {
+        if expect_type(ty1, ty2, false, false, ctx).is_ok() {
             return Ok(ty2);
         }
 
@@ -193,11 +193,11 @@ fn merge<'a: 'inn, 'inn>(
         let ty = ctx.intern(ty);
 
         if join {
-            debug_assert_eq!(expect_type(ty, ty1, true, ctx).map(|_| ()), Ok(()));
-            debug_assert_eq!(expect_type(ty, ty2, true, ctx).map(|_| ()), Ok(()));
+            debug_assert_eq!(expect_type(ty, ty1, true, false, ctx).map(|_| ()), Ok(()));
+            debug_assert_eq!(expect_type(ty, ty2, true, false, ctx).map(|_| ()), Ok(()));
         } else {
-            debug_assert_eq!(expect_type(ty, ty1, false, ctx).map(|_| ()), Ok(()));
-            debug_assert_eq!(expect_type(ty, ty2, false, ctx).map(|_| ()), Ok(()));
+            debug_assert_eq!(expect_type(ty, ty1, false, false, ctx).map(|_| ()), Ok(()));
+            debug_assert_eq!(expect_type(ty, ty2, false, false, ctx).map(|_| ()), Ok(()));
         }
 
         Ok(ty)

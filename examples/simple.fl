@@ -18,4 +18,4 @@
 (?T \x \() x).
   \K: [T] T -> () -> T
 
-(K [bool]).(uncurry [bool] [()] [bool]) (K [bool] true (), ())
+(K [bool]).uncurry (K true (), ())
