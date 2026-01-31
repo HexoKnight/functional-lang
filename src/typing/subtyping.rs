@@ -111,9 +111,7 @@ pub(super) fn expect_type<'a: 'inn, 'inn>(
             // if the lower bound doesn't exist (ie. it is unbounded below), it is equivalent to
             // having a lower bound of the bottom type
             let (_, bounds_expected) = ctx.get_ty_var_unwrap(*level_expected)?;
-            let lower_expected = bounds_expected
-                .lower
-                .unwrap_or_else(|| ctx.intern(Type::Never));
+            let lower_expected = bounds_expected.get_lower(ctx);
             // a type is guaranteed to be a subtype of the instantiated type iff it is a
             // subtype of the lower bound (due to the transitivity of subtyping)
             expect_type(lower_expected, found, subtype, ctx).map_err(try_prepend(|| {
@@ -129,7 +127,7 @@ pub(super) fn expect_type<'a: 'inn, 'inn>(
             // if the lower bound doesn't exist (ie. it is unbounded below), it is equivalent to
             // having a lower bound of the bottom type
             let (_, bounds_found) = ctx.get_ty_var_unwrap(*level_found)?;
-            let upper_found = bounds_found.upper.unwrap_or_else(|| ctx.intern(Type::Any));
+            let upper_found = bounds_found.get_upper(ctx);
             // a type is guaranteed to be a supertype of the instantiated type iff it is a
             // supertype of the upper bound (due to the transitivity of subtyping)
             expect_type(expected, upper_found, subtype, ctx).map_err(try_prepend(|| {
@@ -258,8 +256,8 @@ impl<'a> TyBounds<'a> {
 
         let (inner, outer) = inner_outer_of(expected, found, swapped);
 
-        if let Some(upper_outer) = outer.upper {
-            let upper_inner = inner.upper.unwrap_or_else(|| ctx.intern(Type::Any));
+        if let Some(upper_outer) = outer.get_upper(ctx).not_any() {
+            let upper_inner = inner.get_upper(ctx);
             let (upper_expected, upper_found) = exp_found_of(upper_inner, upper_outer, swapped);
             expect_type(upper_expected, upper_found, !encloses, ctx).map_err(try_prepend(
                 || {
@@ -276,8 +274,8 @@ impl<'a> TyBounds<'a> {
             ))?;
         }
 
-        if let Some(lower_outer) = outer.lower {
-            let lower_inner = inner.lower.unwrap_or_else(|| ctx.intern(Type::Never));
+        if let Some(lower_outer) = outer.get_lower(ctx).not_never() {
+            let lower_inner = inner.get_lower(ctx);
             let (lower_expected, lower_found) = exp_found_of(lower_inner, lower_outer, swapped);
             expect_type(lower_expected, lower_found, encloses, ctx).map_err(try_prepend(|| {
                 Ok(format!(

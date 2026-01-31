@@ -363,11 +363,11 @@ impl<'i: 'a, 'a> TypeCheck<'i, 'a> for uir::Term<'i> {
                         abs = abs.display(ctx)?
                     ));
                 };
-                if let Some(upper) = bounds.upper {
+                if let Some(upper) = bounds.get_upper(ctx).not_any() {
                     expect_type(upper, arg, true, ctx)
                         .map_err(prepend(|| "unsatisfied type arg upper bound:\n"))?;
                 }
-                if let Some(lower) = bounds.lower {
+                if let Some(lower) = bounds.get_lower(ctx).not_never() {
                     expect_type(lower, arg, false, ctx)
                         .map_err(prepend(|| "unsatisfied type arg lower bound:\n"))?;
                 }
@@ -772,8 +772,7 @@ impl<'a> Type<'a> {
             Type::TyVar(level) => ctx
                 .get_ty_var_unwrap(*level)?
                 .1
-                .upper
-                .unwrap_or(ctx.intern(Type::Any))
+                .get_upper(ctx)
                 .upper_concrete(ctx),
             Type::TyAbs { .. }
             | Type::Arr { .. }

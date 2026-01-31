@@ -3,7 +3,10 @@ use itertools::Itertools;
 use crate::{
     hashed_hashmap::HashedHashMap,
     reprs::common::{EnumLabel, Lvl},
-    typing::{TyVarContext, TypeCheckError, context::TyVarStack},
+    typing::{
+        TypeCheckError,
+        context::{TyArenaContext, TyVarContext, TyVarStack},
+    },
 };
 
 type TypeRef<'ctx> = &'ctx Type<'ctx>;
@@ -39,6 +42,15 @@ pub enum Type<'ctx> {
 pub struct TyBounds<'ctx> {
     pub upper: Option<TypeRef<'ctx>>,
     pub lower: Option<TypeRef<'ctx>>,
+}
+
+impl<'ctx> TyBounds<'ctx> {
+    pub(super) fn get_upper(&self, ctx: &impl TyArenaContext<'ctx>) -> TypeRef<'ctx> {
+        self.upper.unwrap_or_else(|| ctx.intern(Type::Any))
+    }
+    pub(super) fn get_lower(&self, ctx: &impl TyArenaContext<'ctx>) -> TypeRef<'ctx> {
+        self.lower.unwrap_or_else(|| ctx.intern(Type::Never))
+    }
 }
 
 pub trait TyDisplay<'ctx> {
