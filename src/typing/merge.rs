@@ -45,10 +45,10 @@ fn merge<'a: 'inn, 'inn>(
             return Ok(ty1);
         }
         // TODO(proper errors): catch specifically subtyping errors
-        if expect_type(ty1, ty2, true, false, ctx).is_ok() {
+        if expect_type(ty1, ty2, join, false, ctx).is_ok() {
             return Ok(ty1);
         }
-        if expect_type(ty1, ty2, false, false, ctx).is_ok() {
+        if expect_type(ty1, ty2, !join, false, ctx).is_ok() {
             return Ok(ty2);
         }
 
