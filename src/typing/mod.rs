@@ -41,7 +41,7 @@ mod typing_context {
     #[derive(Clone)]
     pub(super) struct Context<'a, 'inn> {
         pub(super) inner: &'inn ContextInner<'a>,
-        var_ty_stack: Stack<InternedType<'a>>,
+        var_ty_stack: Stack<(InternedType<'a>, Lvl)>,
         ty_var_stack: Stack<(&'a str, TyBounds<'a>)>,
     }
 
@@ -59,12 +59,36 @@ mod typing_context {
             vars: impl IntoIterator<Item = InternedType<'a>>,
         ) -> Self {
             let mut new = self.clone();
-            new.var_ty_stack.extend(vars);
+
+            let ty_var_level = self.next_ty_var_level();
+
+            new.var_ty_stack
+                .extend(vars.into_iter().map(|var_ty| (var_ty, ty_var_level)));
             new
         }
 
         pub(super) fn get_var_ty(&self, index: Idx) -> Option<&'a Type<'a>> {
-            index.get(&self.var_ty_stack).copied()
+            let (var_ty, ty_var_level) = *index.get(&self.var_ty_stack)?;
+            let current_ty_var_level = self.next_ty_var_level();
+            if ty_var_level == current_ty_var_level {
+                return Some(var_ty);
+            }
+            debug_assert!(current_ty_var_level.deeper_than(ty_var_level));
+
+            Some(var_ty.map_ty_vars(
+                |level| {
+                    let level = if level.deeper_than(ty_var_level) {
+                        level.translate(ty_var_level, current_ty_var_level).expect(
+                            "current ty_var_stack cannot be smaller than \
+                            the ty_var_stack of a currently bound variable",
+                        )
+                    } else {
+                        level
+                    };
+                    self.intern(Type::TyVar(level))
+                },
+                self,
+            ))
         }
     }
 
