@@ -500,7 +500,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                 let arg = if let (Some(arg), Some(check_arg)) = (arg, check_arg) {
                     Some(expect_type(check_arg, arg, false, false, ctx)?)
                 } else {
-                    arg
+                    arg.or(check_arg)
                 };
 
                 if let Some(check_enum) = check_enum {
@@ -519,6 +519,12 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         ));
                     };
 
+                    let arg = if let Some(arg) = arg {
+                        expect_type(check_variant_type, arg, true, false, ctx)?
+                    } else {
+                        check_variant_type
+                    };
+
                     let result = ctx.intern(Type::Enum(
                         std::iter::once((*label, *check_variant_type)).collect(),
                     ));
@@ -528,10 +534,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
 
                     (
                         tir::RawTerm::Enum(*label),
-                        ctx.intern(Type::Arr {
-                            arg: check_variant_type,
-                            result,
-                        }),
+                        ctx.intern(Type::Arr { arg, result }),
                     )
                 } else if let Some(arg) = arg {
                     let result = ctx.intern(Type::Enum(std::iter::once((*label, arg)).collect()));

@@ -418,6 +418,8 @@ fn type_inference() {
     evaluate_check_type(r"(\e e.match {}) .\x:enum{} -> bool x", "enum {} -> bool");
     evaluate_check_type(r"match {} .\x:enum{} -> bool x", "enum {} -> bool");
 
+    evaluate_check_type(r"enum wrap .\x:bool->_ x", "bool -> _");
+
     evaluate_check_type(
         r"(\op: (bool, bool -> ()) -> () op (false, \x ())) (\(b, f) f b)",
         "()",
