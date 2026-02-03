@@ -61,15 +61,15 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
                 let result = result.as_ref().eval(ctx)?;
                 Type::Arr { arg, result }
             }
-            uir::RawType::Tuple(elems) => {
-                Type::Tuple(elems.iter().map(|e| e.eval(ctx)).try_collect()?)
-            }
             uir::RawType::Enum(variants) => Type::Enum(
                 variants
                     .iter()
                     .map(|(l, t)| t.eval(ctx).map(|t| (*l, t)))
                     .try_collect()?,
             ),
+            uir::RawType::Tuple(elems) => {
+                Type::Tuple(elems.iter().map(|e| e.eval(ctx)).try_collect()?)
+            }
             uir::RawType::Bool => Type::Bool,
             uir::RawType::Any => Type::Any,
             uir::RawType::Never => Type::Never,

@@ -4,7 +4,7 @@ use itertools::Itertools;
 
 use crate::common::WithInfo;
 use crate::reprs::ast;
-use crate::reprs::common::{ArgStructure, EnumLabel};
+use crate::reprs::common::{ArgStructure, Label};
 use crate::reprs::untyped_ir as ir;
 
 use self::context::Context;
@@ -128,7 +128,7 @@ impl<'i> Validate<'i> for ast::Term<'i> {
                 ir::RawTerm::Var(index)
             }
             ast::RawTerm::Enum(enum_type, variant) => {
-                ir::RawTerm::Enum(enum_type.validate(ctx)?, EnumLabel(variant.name))
+                ir::RawTerm::Enum(enum_type.validate(ctx)?, Label(variant.name))
             }
             ast::RawTerm::Match(enum_type, arms) => ir::RawTerm::Match(
                 enum_type.validate(ctx)?,
@@ -173,15 +173,15 @@ impl<'i> Validate<'_> for ast::Type<'i> {
                 arg: arg.validate(ctx)?,
                 result: result.validate(ctx)?,
             },
-            ast::RawType::Tuple(elements) => {
-                ir::RawType::Tuple(elements.iter().map(|t| t.validate(ctx)).try_collect()?)
-            }
             ast::RawType::Enum(variants) => ir::RawType::Enum(
                 check_unique_labels(variants)
                     .map_ok(|(l, t)| t.validate(ctx).map(|t| (l, t)))
                     .flatten_ok()
                     .try_collect()?,
             ),
+            ast::RawType::Tuple(elements) => {
+                ir::RawType::Tuple(elements.iter().map(|t| t.validate(ctx)).try_collect()?)
+            }
             ast::RawType::Bool => ir::RawType::Bool,
             ast::RawType::Any => ir::RawType::Any,
             ast::RawType::Never => ir::RawType::Never,
@@ -231,10 +231,10 @@ fn extract_idents<'a, 'i>(
 
 fn check_unique_labels<'i, 'a, I>(
     labelled_items: &'a [(ast::Ident<'i>, I)],
-) -> impl Iterator<Item = Result<(EnumLabel<'i>, &'a I), ValidationError>> {
+) -> impl Iterator<Item = Result<(Label<'i>, &'a I), ValidationError>> {
     let mut labels = HashMap::new();
     labelled_items.iter().map(move |(ident, i)| {
-        let label = EnumLabel(ident.name);
+        let label = Label(ident.name);
         if let Some(_prev_ident) = labels.insert(label, ident) {
             return Err(format!("label '{label}' appears multiple times"));
         }

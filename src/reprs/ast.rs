@@ -70,8 +70,8 @@ pub enum RawType<'i> {
         result: Box<Type<'i>>,
     },
 
-    Tuple(Box<[Type<'i>]>),
     Enum(Box<[(Ident<'i>, Type<'i>)]>),
+    Tuple(Box<[Type<'i>]>),
 
     Bool,
     Any,

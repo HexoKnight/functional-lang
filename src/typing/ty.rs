@@ -2,7 +2,7 @@ use itertools::Itertools;
 
 use crate::{
     hashed_hashmap::HashedHashMap,
-    reprs::common::{EnumLabel, Lvl},
+    reprs::common::{Label, Lvl},
     typing::{
         TypeCheckError,
         context::{TyArenaContext, TyVarContext, TyVarStack},
@@ -30,7 +30,7 @@ pub enum Type<'ctx> {
         result: TypeRef<'ctx>,
     },
 
-    Enum(HashedHashMap<EnumLabel<'ctx>, TypeRef<'ctx>>),
+    Enum(HashedHashMap<Label<'ctx>, TypeRef<'ctx>>),
     Tuple(Box<[TypeRef<'ctx>]>),
 
     Bool,

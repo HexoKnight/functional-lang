@@ -13,9 +13,9 @@ pub enum ArgStructure {
 }
 
 #[derive(Hash, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
-pub struct EnumLabel<'i>(pub &'i str);
+pub struct Label<'i>(pub &'i str);
 
-newtype_derive!([EnumLabel<'i>(&'i str)] Debug, Display);
+newtype_derive!([Label<'i>(&'i str)] Debug, Display);
 
 /// de Bruijn index
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]

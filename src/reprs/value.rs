@@ -6,7 +6,7 @@ use crate::{
     common::WithInfo,
     evaluation::ContextClosure,
     reprs::{
-        common::{ArgStructure, EnumLabel, Span},
+        common::{ArgStructure, Label, Span},
         typed_ir,
     },
 };
@@ -17,7 +17,7 @@ pub type Value<'i, Closure = ()> = WithInfo<Span<'i>, RawValue<'i, Closure>>;
 pub enum RawValue<'i, Closure> {
     Func(Func<'i, Closure>),
 
-    EnumVariant(EnumLabel<'i>, Box<Value<'i, Closure>>),
+    EnumVariant(Label<'i>, Box<Value<'i, Closure>>),
     Tuple(Box<[Value<'i, Closure>]>),
     Bool(bool),
 }
@@ -26,8 +26,8 @@ pub enum RawValue<'i, Closure> {
 pub enum Func<'i, Closure> {
     Abs(ArgStructure, Closure),
 
-    EnumCons(EnumLabel<'i>),
-    Match(HashMap<EnumLabel<'i>, Closure>),
+    EnumCons(Label<'i>),
+    Match(HashMap<Label<'i>, Closure>),
 }
 
 #[derive(Clone)]
