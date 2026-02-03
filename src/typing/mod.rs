@@ -39,8 +39,35 @@ impl<'a> Type<'a> {
             ctx: &(impl TyArenaContext<'a> + TyVarContext<'a>),
             output: &mut impl FnMut(&'s Type<'a>),
         ) -> Result<(), TypeCheckError> {
-            match (arg_structure, ty) {
-                (ArgStructure::Tuple(st_elems), Type::Tuple(ty_elems)) => {
+            match arg_structure {
+                ArgStructure::Record(st_fields) => {
+                    let Type::Record(ty_fields) = ty else {
+                        return Err(format!(
+                            "cannot record-destructure value of type {ty}",
+                            ty = ty.display(ctx)?
+                        ));
+                    };
+
+                    st_fields.iter().try_for_each(|(l, st)| {
+                        if let Some(ty) = ty_fields.0.get(l) {
+                            inner(st, ty, ctx, output)
+                        } else {
+                            Err(format!(
+                                "destructured record has field with label '{l}'\n\
+                                while it's missing from it's type"
+                            ))
+                        }
+                    })?;
+                }
+
+                ArgStructure::Tuple(st_elems) => {
+                    let Type::Tuple(ty_elems) = ty else {
+                        return Err(format!(
+                            "cannot tuple-destructure value of type {ty}",
+                            ty = ty.display(ctx)?
+                        ));
+                    };
+
                     let st_len = st_elems.len();
                     let ty_len = ty_elems.len();
                     if st_len != ty_len {
@@ -52,13 +79,7 @@ impl<'a> Type<'a> {
                         .try_for_each(|(st, ty)| inner(st, ty, ctx, output))?;
                 }
 
-                (ArgStructure::Tuple(_), ty) => {
-                    return Err(format!(
-                        "cannot tuple-destructure value of type {ty}",
-                        ty = ty.display(ctx)?
-                    ));
-                }
-                (ArgStructure::Var, ty) => output(ty),
+                ArgStructure::Var => output(ty),
             }
             Ok(())
         }
@@ -92,6 +113,13 @@ impl<'a> Type<'a> {
             },
             Type::Enum(variants) => Type::Enum(
                 variants
+                    .0
+                    .iter()
+                    .map(|(l, t)| t.try_map_ty_vars(f, ctx).map(|t| (*l, t)))
+                    .try_collect()?,
+            ),
+            Type::Record(fields) => Type::Record(
+                fields
                     .0
                     .iter()
                     .map(|(l, t)| t.try_map_ty_vars(f, ctx).map(|t| (*l, t)))
@@ -158,6 +186,7 @@ impl<'a> Type<'a> {
             Type::TyAbs { .. }
             | Type::Arr { .. }
             | Type::Enum(..)
+            | Type::Record(..)
             | Type::Tuple(..)
             | Type::Bool
             | Type::Any
@@ -173,6 +202,7 @@ impl<'a> Type<'a> {
             | Type::TyVar { .. }
             | Type::Arr { .. }
             | Type::Enum(..)
+            | Type::Record(..)
             | Type::Tuple(..)
             | Type::Bool
             | Type::Never => Some(self),
@@ -187,6 +217,7 @@ impl<'a> Type<'a> {
             | Type::TyVar { .. }
             | Type::Arr { .. }
             | Type::Enum(..)
+            | Type::Record(..)
             | Type::Tuple(..)
             | Type::Bool
             | Type::Any => Some(self),

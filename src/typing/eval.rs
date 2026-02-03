@@ -67,6 +67,12 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
                     .map(|(l, t)| t.eval(ctx).map(|t| (*l, t)))
                     .try_collect()?,
             ),
+            uir::RawType::Record(fields) => Type::Record(
+                fields
+                    .iter()
+                    .map(|(l, t)| t.eval(ctx).map(|t| (*l, t)))
+                    .try_collect()?,
+            ),
             uir::RawType::Tuple(elems) => {
                 Type::Tuple(elems.iter().map(|e| e.eval(ctx)).try_collect()?)
             }

@@ -144,6 +144,23 @@ fn merge<'a: 'inn, 'inn>(
                 .map(|(l, r)| r.map(|ty| (*l, ty)))
                 .try_collect()?
             }),
+            (Type::Record(fields1), Type::Record(fields2)) => Type::Record(if join {
+                hashmap_intersection(&fields1.0, &fields2.0, |ty1, ty2| {
+                    merge2(ty1, ty2, join, ctx)
+                })
+                .map(|(l, r)| r.map(|ty| (*l, ty)))
+                .try_collect()?
+            } else {
+                hashmap_union(
+                    &fields1.0,
+                    &fields2.0,
+                    |ty1| Ok(*ty1),
+                    |ty2| Ok(*ty2),
+                    |ty1, ty2| merge2(ty1, ty2, join, ctx),
+                )
+                .map(|(l, r)| r.map(|ty| (*l, ty)))
+                .try_collect()?
+            }),
             (Type::Tuple(elems1), Type::Tuple(elems2)) => {
                 let len1 = elems1.len();
                 let len2 = elems2.len();
@@ -176,6 +193,7 @@ fn merge<'a: 'inn, 'inn>(
                 | Type::TyVar { .. }
                 | Type::Arr { .. }
                 | Type::Enum(..)
+                | Type::Record(..)
                 | Type::Tuple(..)
                 | Type::Bool,
                 _,

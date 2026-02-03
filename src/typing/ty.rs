@@ -31,6 +31,7 @@ pub enum Type<'ctx> {
     },
 
     Enum(HashedHashMap<Label<'ctx>, TypeRef<'ctx>>),
+    Record(HashedHashMap<Label<'ctx>, TypeRef<'ctx>>),
     Tuple(Box<[TypeRef<'ctx>]>),
 
     Bool,
@@ -108,6 +109,22 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
             Type::Enum(variants) => {
                 w.push_str("enum {");
                 let mut iter = variants.0.iter().sorted_unstable_by_key(|(l, _)| *l);
+                if let Some((l, ty)) = iter.next() {
+                    w.push_str(l.0);
+                    w.push_str(": ");
+                    ty.write_display(ctx, w)?;
+                    for (l, ty) in iter {
+                        w.push_str(", ");
+                        w.push_str(l.0);
+                        w.push_str(": ");
+                        ty.write_display(ctx, w)?;
+                    }
+                }
+                w.push('}');
+            }
+            Type::Record(fields) => {
+                w.push('{');
+                let mut iter = fields.0.iter().sorted_unstable_by_key(|(l, _)| *l);
                 if let Some((l, ty)) = iter.next() {
                     w.push_str(l.0);
                     w.push_str(": ");

@@ -101,7 +101,7 @@ impl<'i> Validate<'i> for ast::Term<'i> {
                 arg_type,
                 body,
             } => {
-                let (arg_structure, arg_vars) = extract_idents(arg);
+                let (arg_structure, arg_vars) = extract_idents(arg)?;
                 ir::RawTerm::Abs {
                     arg_structure,
                     arg_type: arg_type.validate(ctx)?,
@@ -133,7 +133,13 @@ impl<'i> Validate<'i> for ast::Term<'i> {
             ast::RawTerm::Match(enum_type, arms) => ir::RawTerm::Match(
                 enum_type.validate(ctx)?,
                 check_unique_labels(arms)
-                    .map_ok(|(l, t)| t.validate(ctx).map(|t| (l, t)))
+                    .map_ok(|(_, l, t)| t.validate(ctx).map(|t| (l, t)))
+                    .map(Result::flatten)
+                    .try_collect()?,
+            ),
+            ast::RawTerm::Record(fields) => ir::RawTerm::Record(
+                check_unique_labels(fields)
+                    .map_ok(|(_, l, t)| t.validate(ctx).map(|t| (l, t)))
                     .map(Result::flatten)
                     .try_collect()?,
             ),
@@ -175,7 +181,13 @@ impl<'i> Validate<'_> for ast::Type<'i> {
             },
             ast::RawType::Enum(variants) => ir::RawType::Enum(
                 check_unique_labels(variants)
-                    .map_ok(|(l, t)| t.validate(ctx).map(|t| (l, t)))
+                    .map_ok(|(_, l, t)| t.validate(ctx).map(|t| (l, t)))
+                    .flatten_ok()
+                    .try_collect()?,
+            ),
+            ast::RawType::Record(fields) => ir::RawType::Record(
+                check_unique_labels(fields)
+                    .map_ok(|(_, l, t)| t.validate(ctx).map(|t| (l, t)))
                     .flatten_ok()
                     .try_collect()?,
             ),
@@ -204,40 +216,58 @@ impl<'i> Validate<'_> for ast::TyBounds<'i> {
 
 fn extract_idents<'a, 'i>(
     assignee: &'a ast::Assignee<'i>,
-) -> (ArgStructure, impl Iterator<Item = &'a ast::Ident<'i>>) {
+) -> Result<(ArgStructure<'i>, impl Iterator<Item = &'a ast::Ident<'i>>), ValidationError> {
     fn extract_idents_inner<'a, 'i>(
         assignee: &'a ast::Assignee<'i>,
         idents: &mut Vec<&'a ast::Ident<'i>>,
-    ) -> ArgStructure {
-        match assignee {
+    ) -> Result<ArgStructure<'i>, ValidationError> {
+        let st = match assignee {
+            ast::Assignee::Record(fields) => ArgStructure::Record(
+                check_unique_labels(fields)
+                    .map_ok(|(ident, label, assignee)| {
+                        Ok((
+                            label,
+                            if let Some(assignee) = assignee {
+                                extract_idents_inner(assignee, idents)?
+                            } else {
+                                idents.push(ident);
+                                ArgStructure::Var
+                            },
+                        ))
+                    })
+                    .map(Result::flatten)
+                    .try_collect()?,
+            ),
             ast::Assignee::Tuple(elements) => ArgStructure::Tuple(
                 elements
                     .iter()
                     .map(|assignee| extract_idents_inner(assignee, idents))
-                    .collect(),
+                    .try_collect()?,
             ),
             ast::Assignee::Ident(ident) => {
                 idents.push(ident);
                 ArgStructure::Var
             }
-        }
+        };
+
+        Ok(st)
     }
     let mut idents = Vec::new();
-    (
-        extract_idents_inner(assignee, &mut idents),
+    Ok((
+        extract_idents_inner(assignee, &mut idents)?,
         idents.into_iter(),
-    )
+    ))
 }
 
 fn check_unique_labels<'i, 'a, I>(
     labelled_items: &'a [(ast::Ident<'i>, I)],
-) -> impl Iterator<Item = Result<(Label<'i>, &'a I), ValidationError>> {
+) -> impl Iterator<Item = Result<(&'a ast::Ident<'i>, Label<'i>, &'a I), ValidationError>> {
     let mut labels = HashMap::new();
     labelled_items.iter().map(move |(ident, i)| {
         let label = Label(ident.name);
         if let Some(_prev_ident) = labels.insert(label, ident) {
             return Err(format!("label '{label}' appears multiple times"));
         }
-        Ok((label, i))
+        Ok((ident, label, i))
     })
 }

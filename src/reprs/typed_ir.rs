@@ -10,7 +10,7 @@ pub type Term<'i> = WithInfo<Span<'i>, RawTerm<'i>>;
 #[derive(Eq, PartialEq, Debug)]
 pub enum RawTerm<'i> {
     Abs {
-        arg_structure: ArgStructure,
+        arg_structure: ArgStructure<'i>,
         body: Box<Term<'i>>,
     },
     App {
@@ -23,6 +23,7 @@ pub enum RawTerm<'i> {
     Enum(Label<'i>),
     Match(HashMap<Label<'i>, Term<'i>>),
 
+    Record(Box<[(Label<'i>, Term<'i>)]>),
     Tuple(Box<[Term<'i>]>),
 
     Bool(bool),

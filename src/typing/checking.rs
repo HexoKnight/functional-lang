@@ -669,6 +669,42 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     )
                 }
             }
+            uir::RawTerm::Record(field_terms) => {
+                let check_fields = check_type
+                    .take()
+                    .map(|check_type| {
+                        let Type::Record(check_fields) = check_type else {
+                            return Err(format!(
+                                "expected: {}\n\
+                                got a record type",
+                                check_type.display(ctx)?
+                            ));
+                        };
+                        for label in check_fields.0.keys() {
+                            if !field_terms.iter().any(|(l, _)| l == label) {
+                                return Err(format!("record missing field with label '{label}'"));
+                            }
+                        }
+                        Ok(check_fields)
+                    })
+                    .transpose()?;
+
+                let (field_terms, fields): (Vec<_>, _) = field_terms
+                    .iter()
+                    .map(|(label, field_term)| {
+                        let check_field = check_fields
+                            .and_then(|check_fields| check_fields.0.get(label).copied());
+
+                        field_term
+                            .type_check(check_field, infer_ty_args, ctx)
+                            .map(|(field_term, field)| ((*label, field_term), (*label, field)))
+                    })
+                    .try_collect()?;
+                (
+                    tir::RawTerm::Record(field_terms.into_boxed_slice()),
+                    ctx.intern(Type::Record(fields)),
+                )
+            }
             uir::RawTerm::Tuple(elem_terms) => {
                 let check_elems = check_type
                     .take()

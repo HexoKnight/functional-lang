@@ -7,8 +7,9 @@ pub struct Span<'i> {
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub enum ArgStructure {
-    Tuple(Box<[ArgStructure]>),
+pub enum ArgStructure<'i> {
+    Record(Box<[(Label<'i>, ArgStructure<'i>)]>),
+    Tuple(Box<[ArgStructure<'i>]>),
     Var,
 }
 

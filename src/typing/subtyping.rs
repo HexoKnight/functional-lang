@@ -446,6 +446,11 @@ mod inference {
                     .values()
                     .map(|t| t.get_variance_of(ty_var_level))
                     .sum(),
+                Type::Record(fields) => fields
+                    .0
+                    .values()
+                    .map(|t| t.get_variance_of(ty_var_level))
+                    .sum(),
                 Type::Tuple(elems) => elems.iter().map(|t| t.get_variance_of(ty_var_level)).sum(),
                 Type::Bool | Type::Any | Type::Never => Variance::Constant,
             }
@@ -658,6 +663,37 @@ fn expect_type_rec<'a>(
                 .try_collect()
                 .map(|variants| ctx.intern(Type::Enum(variants)))
         }
+        (Type::Record(fields_expected), Type::Record(fields_found), _) => {
+            let (fields_super, fields_sub) = super_sub_of(fields_expected, fields_found, swapped);
+            fields_super
+                .0
+                .iter()
+                // for each field of the supertype:
+                .map(|(l, ty_super)| {
+                    // check that the subtype also has it...
+                    if let Some(ty_sub) = fields_sub.0.get(l) {
+                        let (ty_expected, ty_found) = exp_found_of(ty_super, ty_sub, swapped);
+                        // and that the field types maintain the same subtyping relationship
+                        Ok((
+                            *l,
+                            expect_type_rec(ty_expected, ty_found, subtype, infer_ty_args, ctx)?,
+                        ))
+                    } else {
+                        let (ty_sub, ctx_sub) = if swapped {
+                            (expected, ctx.exp_ctx())
+                        } else {
+                            (found, ctx.fnd_ctx())
+                        };
+                        Err(format!(
+                            "label '{l}' missing from subtype:\n\
+                            | {}",
+                            ty_sub.display(ctx_sub)?
+                        ))
+                    }
+                })
+                .try_collect()
+                .map(|fields| ctx.intern(Type::Record(fields)))
+        }
         (Type::Tuple(elems_expected), Type::Tuple(elems_found), _) => {
             let len_expected = elems_expected.len();
             let len_found = elems_found.len();
@@ -686,8 +722,13 @@ fn expect_type_rec<'a>(
             .to_string()),
         // not using _ to avoid catching more cases than intended
         (
-            Type::TyAbs { .. } | Type::Arr { .. } | Type::Enum(..) | Type::Tuple(..) | Type::Bool,
-            Type::Arr { .. } | Type::Enum(..) | Type::Tuple(..) | Type::Bool,
+            Type::TyAbs { .. }
+            | Type::Arr { .. }
+            | Type::Enum(..)
+            | Type::Record(..)
+            | Type::Tuple(..)
+            | Type::Bool,
+            Type::Arr { .. } | Type::Enum(..) | Type::Record(..) | Type::Tuple(..) | Type::Bool,
             _,
         ) => Err("types are incompatible".to_string()),
     }

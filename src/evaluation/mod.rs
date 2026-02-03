@@ -143,6 +143,12 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
                     })
                     .collect(),
             )),
+            tir::RawTerm::Record(fields) => RawValue::Record(
+                fields
+                    .iter()
+                    .map(|(l, f)| f.evaluate(ctx).map(|f| (*l, f)))
+                    .try_collect()?,
+            ),
             tir::RawTerm::Tuple(elems) => {
                 RawValue::Tuple(elems.iter().map(|e| e.evaluate(ctx)).try_collect()?)
             }
@@ -207,8 +213,34 @@ impl Value<'_, '_, '_> {
             output: &mut impl FnMut(Value<'i, 'ir, 'a>),
         ) -> Result<(), EvaluationError> {
             let WithInfo(info, val) = val;
-            match (arg_structure, val) {
-                (ArgStructure::Tuple(st_elems), RawValue::Tuple(val_elems)) => {
+            match arg_structure {
+                ArgStructure::Record(st_fields) => {
+                    let RawValue::Record(mut val_fields) = val else {
+                        return Err(
+                            "illegal failure: type checking failed: record destructure on non-record"
+                                .to_string(),
+                        );
+                    };
+
+                    st_fields.into_iter().try_for_each(|(l, st)| {
+                        if let Some(val) = val_fields.remove(&l) {
+                            inner(st, val, output)
+                        } else {
+                        Err(format!(
+                            "illegal failure: type checking failed: destructured record missing label: '{l}'"
+                        ))
+                        }
+                    })?;
+                }
+
+                ArgStructure::Tuple(st_elems) => {
+                    let RawValue::Tuple(val_elems) = val else {
+                        return Err(
+                            "illegal failure: type checking failed: tuple destructure on non-tuple"
+                                .to_string(),
+                        );
+                    };
+
                     let st_len = st_elems.len();
                     let val_len = val_elems.len();
                     if st_len != val_len {
@@ -219,13 +251,7 @@ impl Value<'_, '_, '_> {
                     zip_eq(st_elems, val_elems).try_for_each(|(st, val)| inner(st, val, output))?;
                 }
 
-                (ArgStructure::Tuple(_), _) => {
-                    return Err(
-                        "illegal failure: type checking failed: tuple destructure on non-tuple"
-                            .to_string(),
-                    );
-                }
-                (ArgStructure::Var, val) => output(WithInfo(info, val)),
+                ArgStructure::Var => output(WithInfo(info, val)),
             }
             Ok(())
         }

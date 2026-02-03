@@ -217,6 +217,32 @@ fn tuples() {
 }
 
 #[test]
+fn records() {
+    evaluate_check_type(r"{a:true, b:()}", "{a: bool, b: ()}");
+    evaluate_check_type(r"{}", "{}");
+    evaluate_eq(
+        r"(\x:{a: bool, b:{}} x) {a:false, b:{}}",
+        r"{a: false, b: {}}",
+    );
+    validate_failure(r"\{a, b:x} b");
+    evaluate_eq(
+        r"(\{a, b:x}:{a:bool, b:bool} a) {a:false, b:true}",
+        r"false",
+    );
+    evaluate_eq(
+        r"(\{a:x, b:x}:{a:bool, b:bool} x) {a:false, b:true}",
+        r"true",
+    );
+
+    evaluate_check_type(
+        r"\{x,y,z:{w,x}}: {x:{},y:{},z:{w:{},x:bool}} x",
+        "{x: {}, y: {}, z: {w: {}, x: bool}} -> bool",
+    );
+    type_check_failure(r"\{x,y,z:{w,x}}: {x:{},y:{},z:{},w:bool} x");
+    type_check_failure(r"\{x,y:x}:{x:bool,y:{}} (\y:bool {}) x");
+}
+
+#[test]
 fn enums() {
     evaluate_check_type(r"\x: enum {} x", "enum {} -> enum {}");
     evaluate_check_type(

@@ -31,6 +31,8 @@ pub enum RawTerm<'i> {
     Enum(Option<Type<'i>>, Ident<'i>),
     Match(Option<Type<'i>>, Box<[(Ident<'i>, Term<'i>)]>),
 
+    Record(Box<[(Ident<'i>, Term<'i>)]>),
+
     Tuple(Box<[Term<'i>]>),
 
     Bool(bool),
@@ -38,6 +40,7 @@ pub enum RawTerm<'i> {
 
 #[derive(Eq, PartialEq, Debug)]
 pub enum Assignee<'i> {
+    Record(Box<[(Ident<'i>, Option<Assignee<'i>>)]>),
     Tuple(Box<[Assignee<'i>]>),
     Ident(Ident<'i>),
 }
@@ -71,6 +74,7 @@ pub enum RawType<'i> {
     },
 
     Enum(Box<[(Ident<'i>, Type<'i>)]>),
+    Record(Box<[(Ident<'i>, Type<'i>)]>),
     Tuple(Box<[Type<'i>]>),
 
     Bool,

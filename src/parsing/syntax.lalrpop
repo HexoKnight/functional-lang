@@ -72,6 +72,8 @@ SimpleTerm: RawTerm<'input> = {
     "enum" <(":" <Type>)?> <Ident> => RawTerm::Enum(<>),
     "match" <ty:(":" <Type>)?> "{" <arms:CommaSep<(Ident Term)>> "}" => RawTerm::Match(ty, arms.into_boxed_slice()),
 
+    "{" <CommaSep<(<Ident> ":" <Term>)>> "}" => RawTerm::Record(<>.into_boxed_slice()),
+
     Tuple<Term> => RawTerm::Tuple(<>),
 
     "true" => RawTerm::Bool(true),
@@ -79,6 +81,7 @@ SimpleTerm: RawTerm<'input> = {
 }
 
 Assignee: Assignee<'input> = {
+    "{" <CommaSep<(Ident (":" <Assignee>)?)>> "}" => Assignee::Record(<>.into_boxed_slice()),
     Tuple<Assignee> => Assignee::Tuple(<>),
     Ident => Assignee::Ident(<>),
 }
@@ -111,6 +114,8 @@ SimpleType: RawType<'input> = {
 
     "enum" "{" <variants:CommaSep<(<Ident> ":" <Type>)>> "}" =>
         RawType::Enum(variants.into_boxed_slice()),
+    "{" <CommaSep<(<Ident> ":" <Type>)>> "}" =>
+        RawType::Record(<>.into_boxed_slice()),
     Tuple<Type> => RawType::Tuple(<>),
 
     "bool" => RawType::Bool,
