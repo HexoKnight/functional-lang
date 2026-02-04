@@ -14,6 +14,7 @@ default = []
 binary = ["dep:clap", "dep:clio"]
 
 [dependencies]
+annotate-snippets = "0.12.11"
 clap = { version = "4.5.53", optional = true, features = ["derive"] }
 clio = { version = "0.3.5", optional = true, features = ["clap-parse"] }
 derive-where = "1.6.0"

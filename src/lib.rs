@@ -1,4 +1,5 @@
 pub mod common;
+pub mod error;
 pub mod hashed_hashmap;
 pub mod intern;
 pub mod macros;

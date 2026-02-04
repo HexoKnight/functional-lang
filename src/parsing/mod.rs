@@ -1,3 +1,7 @@
+use std::borrow::Cow;
+
+use annotate_snippets::{AnnotationKind, Group, Level, Snippet};
+use itertools::Itertools;
 use lalrpop_util::lalrpop_mod;
 
 use crate::reprs::ast::Term;
@@ -8,10 +12,11 @@ lalrpop_mod!(
     "/parsing/syntax.rs"
 );
 
-type UserParserError = String;
+type UserParserError = std::convert::Infallible;
 
-pub type ParseError<'i> =
-    lalrpop_util::ParseError<usize, lalrpop_util::lexer::Token<'i>, UserParserError>;
+pub struct ParseError<'i>(
+    lalrpop_util::ParseError<usize, lalrpop_util::lexer::Token<'i>, UserParserError>,
+);
 
 #[derive(Default)]
 pub struct Parser {
@@ -29,6 +34,53 @@ impl Parser {
     /// # Errors
     /// When parsing fails.
     pub fn parse<'i>(&self, input: &'i str) -> Result<Term<'i>, ParseError<'i>> {
-        self.term_parser.parse(input)
+        self.term_parser.parse(input).map_err(ParseError)
+    }
+}
+
+impl<'i> ParseError<'i> {
+    pub fn into_record(self, source: &'i str, origin: impl Into<Cow<'i, str>>) -> Vec<Group<'i>> {
+        fn expected_str(expected: &[String]) -> String {
+            match expected {
+                [] => "expected nothing?".into(),
+                [single] => format!("expected: {single}"),
+                [start @ .., last] => std::iter::once("expected one of: ")
+                    .chain(Itertools::intersperse(
+                        start.iter().map(std::ops::Deref::deref),
+                        ", ",
+                    ))
+                    .chain([" or ", last])
+                    .collect(),
+            }
+        }
+
+        let snippet = Snippet::source(source).path(origin.into());
+        let group = match self.0 {
+            lalrpop_util::ParseError::InvalidToken { location } => Level::ERROR
+                .primary_title("Found invalid token")
+                .element(snippet.annotation(AnnotationKind::Primary.span(location..location))),
+
+            lalrpop_util::ParseError::UnrecognizedEof { location, expected } => Level::ERROR
+                .primary_title("Unexpected EOF")
+                .element(snippet.annotation(AnnotationKind::Primary.span(location..location)))
+                .element(Level::NOTE.message(expected_str(&expected))),
+
+            lalrpop_util::ParseError::UnrecognizedToken {
+                token: (start, token, end),
+                expected,
+            } => Level::ERROR
+                .primary_title(format!("Unexpected token: '{token}'"))
+                .element(snippet.annotation(AnnotationKind::Primary.span(start..end).label("here")))
+                .element(Level::NOTE.message(expected_str(&expected))),
+
+            lalrpop_util::ParseError::ExtraToken {
+                token: (start, token, end),
+            } => Level::ERROR
+                .primary_title(format!("Unexpected token: '{token}'"))
+                .element(snippet.annotation(AnnotationKind::Primary.span(start..end).label("here")))
+                .element(Level::NOTE.message("expected nothing")),
+        };
+
+        vec![group]
     }
 }

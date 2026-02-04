@@ -1,5 +1,7 @@
 use self::utils::*;
 
+mod common;
+
 mod utils {
     use pretty_assertions::assert_eq;
 
@@ -11,11 +13,15 @@ mod utils {
         validation::{ValidationError, validate},
     };
 
+    use crate::common::render_error;
+
     #[track_caller]
     fn parse_success(src: &str) -> Term<'_> {
         match Parser::default().parse(src) {
             Ok(o) => o,
-            Err(e) => panic!("parse failure:\n'{}'\n{}", src, e),
+            Err(e) => {
+                panic!("{}", render_error(e, src, "<snippet>"))
+            }
         }
     }
 
@@ -32,12 +38,12 @@ mod utils {
         let ast = parse_success(src);
         match validate(&ast) {
             Ok(o) => o,
-            Err(e) => panic!("validate failure:\n'{}'\n{}", src, e),
+            Err(e) => panic!("{}", render_error(e, src, "<snippet>")),
         }
     }
 
     #[track_caller]
-    pub fn validate_failure(src: &str) -> ValidationError {
+    pub fn validate_failure(src: &str) -> ValidationError<'_> {
         let ast = parse_success(src);
         match validate(&ast) {
             Ok(o) => panic!("validate success:\n'{}'\n{:#?}", src, o),
@@ -50,7 +56,7 @@ mod utils {
         let untyped_ir = validate_success(src);
         match type_check(&untyped_ir) {
             Ok(o) => o,
-            Err(e) => panic!("type check failure:\n'{}'\n{}", src, e),
+            Err(e) => panic!("{}", e),
         }
     }
 
@@ -68,7 +74,7 @@ mod utils {
         let (typed_ir, ty) = type_check_success(src);
         match evaluate(&typed_ir) {
             Ok(o) => (o, ty),
-            Err(e) => panic!("evaluate failure:\n'{}'\n{}", src, e),
+            Err(e) => panic!("{}", render_error(e, src, "<snippet>")),
         }
     }
 

@@ -3,7 +3,12 @@ use std::{io::Read, process::ExitCode};
 use clap::{Parser, Subcommand};
 use clio::Input;
 
-use functional_lang as fl;
+use functional_lang::{
+    error::CompilationError,
+    evaluation, parsing,
+    reprs::{self},
+    typing, validation,
+};
 
 #[derive(Parser)]
 #[command(
@@ -32,26 +37,29 @@ enum Subcommands {
     Evaluate,
 }
 
-fn parse(input: &str) -> Result<fl::reprs::ast::Term<'_>, String> {
-    let parser = fl::parsing::Parser::default();
-    parser.parse(input).map_err(|e| format!("parse error: {e}"))
+fn parse<'i>(input: &'i str) -> Result<reprs::ast::Term<'i>, CompilationError<'i>> {
+    let parser = parsing::Parser::default();
+    parser.parse(input).map_err(Into::into)
 }
 
-fn validate(input: &str) -> Result<fl::reprs::untyped_ir::Term<'_>, String> {
+fn validate<'i>(input: &'i str) -> Result<reprs::untyped_ir::Term<'i>, CompilationError<'i>> {
     let ast = parse(input)?;
-    fl::validation::validate(&ast).map_err(|e| format!("validation error: {e}"))
+    validation::validate(&ast).map_err(Into::into)
 }
 
-fn type_check(input: &str) -> Result<(fl::reprs::typed_ir::Term<'_>, String), String> {
+fn type_check<'i>(
+    input: &'i str,
+) -> Result<(reprs::typed_ir::Term<'i>, String), CompilationError<'i>> {
     let untyped_ir = validate(input)?;
-    fl::typing::type_check(&untyped_ir).map_err(|e| format!("typing error: {e}"))
+    typing::type_check(&untyped_ir).map_err(Into::into)
 }
 
-fn evaluate(input: &str) -> Result<(fl::reprs::value::Value<'_, ()>, String), String> {
+fn evaluate<'i>(
+    input: &'i str,
+) -> Result<(reprs::value::Value<'i, ()>, String), CompilationError<'i>> {
     let (typed_ir, ty) = type_check(input)?;
 
-    let value =
-        fl::evaluation::evaluate(&typed_ir).map_err(|e| format!("evaluation error: {e}"))?;
+    let value = evaluation::evaluate(&typed_ir)?;
     Ok((value, ty))
 }
 
@@ -63,12 +71,20 @@ fn program() -> Result<(), String> {
         .read_to_string(&mut input)
         .map_err(|e| format!("failed to read input:\n{e}"))?;
 
-    match cli.subcommands {
-        Subcommands::Parse => println!("{:#?}", parse(&input)?),
-        Subcommands::Validate => println!("{:#?}", validate(&input)?),
-        Subcommands::TypeCheck => println!("{:#?}", type_check(&input)?),
-        Subcommands::Evaluate => println!("{:#?}", evaluate(&input)?),
+    let origin = cli.source_file.to_string();
+
+    let result = match cli.subcommands {
+        Subcommands::Parse => parse(&input).map(|ast| format!("{ast:#?}")),
+        Subcommands::Validate => validate(&input).map(|uir| format!("{uir:#?}")),
+        Subcommands::TypeCheck => type_check(&input).map(|(tir, ty)| format!("{tir:#?}\n{ty}")),
+        Subcommands::Evaluate => evaluate(&input).map(|(val, ty)| format!("{val:#?}\n{ty}")),
+    };
+
+    match result {
+        Ok(res) => println!("{res}"),
+        Err(err) => println!("{}", err.render_styled(&input, &origin)),
     }
+
     Ok(())
 }
 

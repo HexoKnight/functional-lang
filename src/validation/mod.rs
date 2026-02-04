@@ -8,6 +8,7 @@ use crate::reprs::common::{ArgStructure, Label};
 use crate::reprs::untyped_ir as ir;
 
 use self::context::Context;
+pub use self::error::ValidationError;
 
 mod context {
     use crate::reprs::common::{Idx, Lvl};
@@ -52,11 +53,46 @@ mod context {
     }
 }
 
-pub type ValidationError = String;
+mod error {
+    use std::borrow::Cow;
+
+    use annotate_snippets::{AnnotationKind, Group, Level, Snippet};
+
+    pub enum ValidationError<'i> {
+        VarNotFound { ty_var: bool, name: &'i str },
+        SameLabel { name: &'i str },
+    }
+
+    impl<'i> ValidationError<'i> {
+        pub fn into_record(
+            self,
+            source: &'i str,
+            origin: impl Into<Cow<'i, str>>,
+        ) -> Vec<Group<'i>> {
+            let snippet = Snippet::source(source).path(origin.into());
+
+            let group = match self {
+                ValidationError::VarNotFound { ty_var, name } => Level::ERROR
+                    .primary_title(format!(
+                        "{}variable '{name}' not found",
+                        if ty_var { "type " } else { "" }
+                    ))
+                    .element(snippet.annotation(AnnotationKind::Primary.span(0..0))),
+                ValidationError::SameLabel { name } => Group::with_title(
+                    Level::ERROR.primary_title(format!("label '{name}' appears multiple times")),
+                ),
+            };
+
+            vec![group]
+        }
+    }
+}
+
+type Result<'i, T> = std::result::Result<T, ValidationError<'i>>;
 
 trait Validate<'i> {
     type Validated;
-    fn validate(&self, ctx: &Context<'i>) -> Result<Self::Validated, ValidationError>;
+    fn validate(&self, ctx: &Context<'i>) -> Result<'i, Self::Validated>;
 }
 
 /// Takes an [`ast::Term`] and checks that it is 'valid', returning an
@@ -68,7 +104,7 @@ trait Validate<'i> {
 ///
 /// # Errors
 /// When validation fails.
-pub fn validate<'i>(ast: &ast::Term<'i>) -> Result<ir::Term<'i>, ValidationError> {
+pub fn validate<'i>(ast: &ast::Term<'i>) -> Result<'i, ir::Term<'i>> {
     let ctx = Context::new();
     ast.validate(&ctx)
 }
@@ -76,7 +112,7 @@ pub fn validate<'i>(ast: &ast::Term<'i>) -> Result<ir::Term<'i>, ValidationError
 impl<'i, T: Validate<'i>> Validate<'i> for Box<T> {
     type Validated = Box<T::Validated>;
 
-    fn validate(&self, ctx: &Context<'i>) -> Result<Self::Validated, ValidationError> {
+    fn validate(&self, ctx: &Context<'i>) -> Result<'i, Self::Validated> {
         T::validate(self, ctx).map(Box::new)
     }
 }
@@ -84,7 +120,7 @@ impl<'i, T: Validate<'i>> Validate<'i> for Box<T> {
 impl<'i, T: Validate<'i>> Validate<'i> for Option<T> {
     type Validated = Option<T::Validated>;
 
-    fn validate(&self, ctx: &Context<'i>) -> Result<Self::Validated, ValidationError> {
+    fn validate(&self, ctx: &Context<'i>) -> Result<'i, Self::Validated> {
         self.as_ref().map(|t| t.validate(ctx)).transpose()
     }
 }
@@ -92,7 +128,7 @@ impl<'i, T: Validate<'i>> Validate<'i> for Option<T> {
 impl<'i> Validate<'i> for ast::Term<'i> {
     type Validated = ir::Term<'i>;
 
-    fn validate(&self, ctx: &Context<'i>) -> Result<Self::Validated, ValidationError> {
+    fn validate(&self, ctx: &Context<'i>) -> Result<'i, Self::Validated> {
         let WithInfo(info, term) = self;
 
         let term = match term {
@@ -123,7 +159,10 @@ impl<'i> Validate<'i> for ast::Term<'i> {
             },
             ast::RawTerm::Var(ident) => {
                 let Some(index) = ctx.find_var(ident.name) else {
-                    return Err(format!("variable '{}' not found", ident.name));
+                    return Err(ValidationError::VarNotFound {
+                        ty_var: false,
+                        name: ident.name,
+                    });
                 };
                 ir::RawTerm::Var(index)
             }
@@ -153,10 +192,10 @@ impl<'i> Validate<'i> for ast::Term<'i> {
     }
 }
 
-impl<'i> Validate<'_> for ast::Type<'i> {
+impl<'i> Validate<'i> for ast::Type<'i> {
     type Validated = ir::Type<'i>;
 
-    fn validate(&self, ctx: &Context) -> Result<Self::Validated, ValidationError> {
+    fn validate(&self, ctx: &Context<'i>) -> Result<'i, Self::Validated> {
         let WithInfo(info, ty) = self;
 
         let ty = match ty {
@@ -171,7 +210,10 @@ impl<'i> Validate<'_> for ast::Type<'i> {
             },
             ast::RawType::TyVar(ident) => {
                 let Some(level) = ctx.find_ty_var(ident.name) else {
-                    return Err(format!("type variable '{}' not found", ident.name));
+                    return Err(ValidationError::VarNotFound {
+                        ty_var: true,
+                        name: ident.name,
+                    });
                 };
                 ir::RawType::TyVar(level)
             }
@@ -202,10 +244,10 @@ impl<'i> Validate<'_> for ast::Type<'i> {
     }
 }
 
-impl<'i> Validate<'_> for ast::TyBounds<'i> {
+impl<'i> Validate<'i> for ast::TyBounds<'i> {
     type Validated = ir::TyBounds<'i>;
 
-    fn validate(&self, ctx: &Context) -> Result<Self::Validated, ValidationError> {
+    fn validate(&self, ctx: &Context<'i>) -> Result<'i, Self::Validated> {
         let ast::TyBounds { upper, lower } = self;
         Ok(ir::TyBounds {
             upper: upper.as_ref().map(|ty| ty.validate(ctx)).transpose()?,
@@ -216,11 +258,11 @@ impl<'i> Validate<'_> for ast::TyBounds<'i> {
 
 fn extract_idents<'a, 'i>(
     assignee: &'a ast::Assignee<'i>,
-) -> Result<(ArgStructure<'i>, impl Iterator<Item = &'a ast::Ident<'i>>), ValidationError> {
+) -> Result<'i, (ArgStructure<'i>, impl Iterator<Item = &'a ast::Ident<'i>>)> {
     fn extract_idents_inner<'a, 'i>(
         assignee: &'a ast::Assignee<'i>,
         idents: &mut Vec<&'a ast::Ident<'i>>,
-    ) -> Result<ArgStructure<'i>, ValidationError> {
+    ) -> Result<'i, ArgStructure<'i>> {
         let st = match assignee {
             ast::Assignee::Record(fields) => ArgStructure::Record(
                 check_unique_labels(fields)
@@ -261,12 +303,12 @@ fn extract_idents<'a, 'i>(
 
 fn check_unique_labels<'i, 'a, I>(
     labelled_items: &'a [(ast::Ident<'i>, I)],
-) -> impl Iterator<Item = Result<(&'a ast::Ident<'i>, Label<'i>, &'a I), ValidationError>> {
+) -> impl Iterator<Item = Result<'i, (&'a ast::Ident<'i>, Label<'i>, &'a I)>> {
     let mut labels = HashMap::new();
     labelled_items.iter().map(move |(ident, i)| {
         let label = Label(ident.name);
         if let Some(_prev_ident) = labels.insert(label, ident) {
-            return Err(format!("label '{label}' appears multiple times"));
+            return Err(ValidationError::SameLabel { name: label.0 });
         }
         Ok((ident, label, i))
     })

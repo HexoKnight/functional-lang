@@ -8,6 +8,7 @@ use crate::reprs::value::{self, Closure, Func, RawValue};
 
 use self::context::Context;
 pub use self::context::ContextClosure;
+pub use self::error::EvaluationError;
 
 mod context {
     use typed_arena::Arena;
@@ -73,9 +74,27 @@ mod context {
     }
 }
 
-type Value<'i, 'ir, 'a> = value::Value<'i, Closure<'i, 'ir, 'a>>;
+mod error {
+    use annotate_snippets::{Group, Level};
 
-pub type EvaluationError = String;
+    pub enum EvaluationError {
+        Illegal(String),
+    }
+
+    impl EvaluationError {
+        pub fn into_record(self) -> Vec<Group<'static>> {
+            let group = match self {
+                EvaluationError::Illegal(str) => Level::ERROR
+                    .primary_title("illegal error (bug)")
+                    .element(Level::ERROR.message(str)),
+            };
+
+            vec![group]
+        }
+    }
+}
+
+type Value<'i, 'ir, 'a> = value::Value<'i, Closure<'i, 'ir, 'a>>;
 
 trait Evaluate<'i, 'ir, 'a> {
     type Evaluated;
@@ -114,10 +133,9 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
             )),
             tir::RawTerm::App { func, arg } => {
                 let RawValue::Func(func) = func.evaluate(ctx)?.1 else {
-                    return Err(
-                        "illegal failure: type checking failed: application on non-function"
-                            .to_string(),
-                    );
+                    return Err(EvaluationError::Illegal(
+                        "type checking failed: application on non-function".to_string(),
+                    ));
                 };
 
                 let arg = arg.evaluate(ctx)?;
@@ -125,7 +143,9 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
             }
             tir::RawTerm::Var(index) => ctx
                 .get_var(*index)
-                .ok_or_else(|| format!("illegal failure: variable index not found: {index:?}\n"))?
+                .ok_or_else(|| {
+                    EvaluationError::Illegal(format!("variable index not found: {index:?}\n"))
+                })?
                 .1
                 // TODO: maybe try eliminate this clone??
                 .clone(),
@@ -176,24 +196,22 @@ impl<'i: 'ir, 'ir: 'a, 'a> Func<'i, Closure<'i, 'ir, 'a>> {
             Func::Match(mut arms) => {
                 let WithInfo(_info, arg) = arg;
                 let RawValue::EnumVariant(label, value) = arg else {
-                    return Err(
-                        "illegal failure: type checking failed: match on non-enum".to_string()
-                    );
+                    return Err(EvaluationError::Illegal(
+                        "type checking failed: match on non-enum".to_string(),
+                    ));
                 };
                 let Some(Closure { closed_ctx, body }) = arms.remove(&label) else {
-                    return Err(
-                        "illegal failure: type checking failed: match missing enum label"
-                            .to_string(),
-                    );
+                    return Err(EvaluationError::Illegal(
+                        "type checking failed: match missing enum label".to_string(),
+                    ));
                 };
 
                 let ctx_ = ctx.apply_closure(closed_ctx);
                 let func = body.evaluate(&ctx_)?.1;
                 let RawValue::Func(func) = func else {
-                    return Err(
-                        "illegal failure: type checking failed: match arm is non-function"
-                            .to_string(),
-                    );
+                    return Err(EvaluationError::Illegal(
+                        "type checking failed: match arm is non-function".to_string(),
+                    ));
                 };
                 func.evaluate_arg(*value, ctx)?
             }
@@ -216,37 +234,35 @@ impl Value<'_, '_, '_> {
             match arg_structure {
                 ArgStructure::Record(st_fields) => {
                     let RawValue::Record(mut val_fields) = val else {
-                        return Err(
-                            "illegal failure: type checking failed: record destructure on non-record"
-                                .to_string(),
-                        );
+                        return Err(EvaluationError::Illegal(
+                            "type checking failed: record destructure on non-record".to_string(),
+                        ));
                     };
 
                     st_fields.into_iter().try_for_each(|(l, st)| {
                         if let Some(val) = val_fields.remove(&l) {
                             inner(st, val, output)
                         } else {
-                        Err(format!(
-                            "illegal failure: type checking failed: destructured record missing label: '{l}'"
-                        ))
+                            Err(EvaluationError::Illegal(format!(
+                                "type checking failed: destructured record missing label: '{l}'"
+                            )))
                         }
                     })?;
                 }
 
                 ArgStructure::Tuple(st_elems) => {
                     let RawValue::Tuple(val_elems) = val else {
-                        return Err(
-                            "illegal failure: type checking failed: tuple destructure on non-tuple"
-                                .to_string(),
-                        );
+                        return Err(EvaluationError::Illegal(
+                            "type checking failed: tuple destructure on non-tuple".to_string(),
+                        ));
                     };
 
                     let st_len = st_elems.len();
                     let val_len = val_elems.len();
                     if st_len != val_len {
-                        return Err(format!(
-                            "illegal failure: type checking failed: {st_len}-tuple destructure on {val_len}-tuple"
-                        ));
+                        return Err(EvaluationError::Illegal(format!(
+                            "type checking failed: {st_len}-tuple destructure on {val_len}-tuple"
+                        )));
                     }
                     zip_eq(st_elems, val_elems).try_for_each(|(st, val)| inner(st, val, output))?;
                 }
