@@ -754,17 +754,21 @@ fn handle_found_ty_var<'a>(
     let (_, var_found) = ctx.get_found_ty_var_unwrap(level_found)?;
     match var_found {
         TyVar::Unbound(bounds_found) => {
-            let upper_found = bounds_found.get_upper(ctx);
-            // a type is guaranteed to be a supertype of the instantiated type iff it is a
-            // supertype of the upper bound (due to the transitivity of subtyping)
-            expect_type_rec(expected, upper_found, subtype, false, ctx).map_err(try_prepend(
+            // a type is guaranteed to be a supertype/subtype of the instantiated type iff it is a
+            // supertype/subtype of the upper/lower bound (due to the transitivity of subtyping)
+            let bound_found = if subtype {
+                bounds_found.get_upper(ctx)
+            } else {
+                bounds_found.get_lower(ctx)
+            };
+            expect_type_rec(expected, bound_found, subtype, false, ctx).map_err(try_prepend(
                 || {
                     Ok(format!(
                         "subtyping must be guaranteed \
                         for all possible instantiations of type var: {}\n\
                         for example, one such instantiation is: {}",
                         found.display(ctx.fnd_ctx())?,
-                        upper_found.display(ctx.fnd_ctx())?
+                        bound_found.display(ctx.fnd_ctx())?
                     ))
                 },
             ))?;
@@ -784,16 +788,20 @@ fn handle_expected_ty_var<'a>(
     ctx: &Context<'a, '_>,
 ) -> Result<InternedType<'a>, TypeCheckError> {
     let (_, bounds_expected) = ctx.get_expected_ty_var_unwrap(level_expected)?;
-    let lower_expected = bounds_expected.get_lower(ctx);
-    // a type is guaranteed to be a subtype of the instantiated type iff it is a
-    // subtype of the lower bound (due to the transitivity of subtyping)
-    expect_type_rec(lower_expected, found, subtype, false, ctx).map_err(try_prepend(|| {
+    // a type is guaranteed to be a subtype/supertype of the instantiated type iff it is a
+    // subtype/supertype of the lower/upper bound (due to the transitivity of subtyping)
+    let bound_expected = if subtype {
+        bounds_expected.get_lower(ctx)
+    } else {
+        bounds_expected.get_upper(ctx)
+    };
+    expect_type_rec(bound_expected, found, subtype, false, ctx).map_err(try_prepend(|| {
         Ok(format!(
             "subtyping must be guaranteed \
             for all possible instantiations of type var: {}\n\
             for example, one such instantiation is: {}",
             expected.display(ctx.exp_ctx())?,
-            lower_expected.display(ctx.exp_ctx())?
+            bound_expected.display(ctx.exp_ctx())?
         ))
     }))
 }
