@@ -131,7 +131,7 @@ impl<'a> Type<'a> {
                     .map(|e| e.try_map_ty_vars(f, ctx))
                     .try_collect()?,
             ),
-            Type::Bool | Type::Any | Type::Never => return Ok(self),
+            Type::Bool | Type::Any | Type::Never | Type::Unknown => return Ok(self),
         };
 
         Ok(ctx.intern(ty))
@@ -190,14 +190,15 @@ impl<'a> Type<'a> {
             | Type::Tuple(..)
             | Type::Bool
             | Type::Any
-            | Type::Never => Ok(self),
+            | Type::Never
+            | Type::Unknown => Ok(self),
         }
     }
 
-    /// `Some()` only if not `Type::Any`
-    fn not_any(&'a self) -> Option<&'a Self> {
+    /// `Some()` only if not `Type::Unknown` or `Type::Any`
+    fn known_not_any(&'a self) -> Option<&'a Self> {
         match self {
-            Type::Any => None,
+            Type::Unknown | Type::Any => None,
             Type::TyAbs { .. }
             | Type::TyVar { .. }
             | Type::Arr { .. }
@@ -209,10 +210,10 @@ impl<'a> Type<'a> {
         }
     }
 
-    /// `Some()` only if not `Type::Never`
-    fn not_never(&'a self) -> Option<&'a Self> {
+    /// `Some()` only if not `Type::Unknown` or `Type::Never`
+    fn known_not_never(&'a self) -> Option<&'a Self> {
         match self {
-            Type::Never => None,
+            Type::Unknown | Type::Never => None,
             Type::TyAbs { .. }
             | Type::TyVar { .. }
             | Type::Arr { .. }
@@ -221,6 +222,22 @@ impl<'a> Type<'a> {
             | Type::Tuple(..)
             | Type::Bool
             | Type::Any => Some(self),
+        }
+    }
+
+    /// `Some()` only if not `Type::Unknown`
+    fn known(&'a self) -> Option<&'a Self> {
+        match self {
+            Type::Unknown => None,
+            Type::TyAbs { .. }
+            | Type::TyVar { .. }
+            | Type::Arr { .. }
+            | Type::Enum(..)
+            | Type::Record(..)
+            | Type::Tuple(..)
+            | Type::Bool
+            | Type::Any
+            | Type::Never => Some(self),
         }
     }
 }

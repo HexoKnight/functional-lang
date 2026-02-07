@@ -286,6 +286,10 @@ mod inference {
                 )
             }
 
+            if let Type::Unknown = expected {
+                return Ok(());
+            }
+
             let merge_ctx = MultiContext(ctx.get_inner(), ctx.fnd_ctx_without_inferred());
 
             if subtype {
@@ -452,7 +456,9 @@ mod inference {
                     .map(|t| t.get_variance_of(ty_var_level))
                     .sum(),
                 Type::Tuple(elems) => elems.iter().map(|t| t.get_variance_of(ty_var_level)).sum(),
-                Type::Bool | Type::Any | Type::Never => Variance::Constant,
+                // the unknown type should in fact never appear here but we allow it because
+                // throwing an error would complicate this function
+                Type::Bool | Type::Any | Type::Never | Type::Unknown => Variance::Constant,
             }
         }
     }
@@ -476,6 +482,9 @@ pub(super) fn expect_type<'a: 'inn, 'inn>(
 /// Returns the type that `found` would have if so.
 /// `subtype` determines whether `found` should be allowed to be a subtype
 /// of `expected` or vice versa.
+///
+/// `found` should never be `Type::Unknown`
+/// should never return `Type::Unknown`
 ///
 /// # Errors
 /// returns Err when not subtype
@@ -505,11 +514,11 @@ fn expect_type_rec<'a>(
     let relation = if subtype { "subtype" } else { "supertype" };
 
     match (expected, found, subtype) {
-        (Type::Bool, Type::Bool, _)
-        | (Type::Any, _, true)
-        | (_, Type::Any, false)
-        | (_, Type::Never, true)
-        | (Type::Never, _, false) => Ok(found),
+        (Type::Bool, Type::Bool, _) | (_, Type::Any, false) | (_, Type::Never, true) => Ok(found),
+        (Type::Any, _, true) | (Type::Never, _, false) | (Type::Unknown, _, _) => {
+            Ok(found)
+        }
+        (_, Type::Unknown, _) => Err("illegal failure: Unknown cannot be a found type".to_string()),
 
         (
             Type::TyAbs {
@@ -843,7 +852,10 @@ impl<'a> TyBounds<'a> {
 
         let (inner, outer) = inner_outer_of(expected, found, swapped);
 
-        if let Some(upper_outer) = outer.get_upper(ctx).not_any() {
+        // neither outer's upper or lower bounds should be Unknown but if they are we will ignore
+        // them (for better or for worse)
+
+        if let Some(upper_outer) = outer.get_upper(ctx).known_not_any() {
             let upper_inner = inner.get_upper(ctx);
             let (upper_expected, upper_found) = exp_found_of(upper_inner, upper_outer, swapped);
             expect_type_rec(upper_expected, upper_found, !encloses, false, ctx).map_err(
@@ -861,7 +873,7 @@ impl<'a> TyBounds<'a> {
             )?;
         }
 
-        if let Some(lower_outer) = outer.get_lower(ctx).not_never() {
+        if let Some(lower_outer) = outer.get_lower(ctx).known_not_never() {
             let lower_inner = inner.get_lower(ctx);
             let (lower_expected, lower_found) = exp_found_of(lower_inner, lower_outer, swapped);
             expect_type_rec(lower_expected, lower_found, encloses, false, ctx).map_err(

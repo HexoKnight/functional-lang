@@ -37,6 +37,15 @@ pub enum Type<'ctx> {
     Bool,
     Any,
     Never,
+
+    /// used specifically for type inference
+    /// while Any represents a statically unknown type
+    /// Unknown represents a type that will be statically known
+    /// but just hasn't been determined yet
+    /// should not appear in the result of any type checking operation
+    ///
+    /// a future refactor could make `check_type` and `expected` use some `UnknownOrType` instead
+    Unknown,
 }
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq)]
@@ -158,6 +167,7 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
             Type::Bool => w.push_str("bool"),
             Type::Any => w.push('_'),
             Type::Never => w.push('!'),
+            Type::Unknown => w.push('?'),
         }
         Ok(())
     }

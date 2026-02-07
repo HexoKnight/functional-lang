@@ -182,6 +182,9 @@ fn merge<'a: 'inn, 'inn>(
                     Type::Never
                 }
             }
+            (Type::Unknown, _) | (_, Type::Unknown) => {
+                return Err("illegal failure: unknown type should never be merged".to_string());
+            }
             (Type::Bool, Type::Bool) => Type::Bool,
             (ty_super @ Type::Any, ty_sub)
             | (ty_sub, ty_super @ Type::Any)
