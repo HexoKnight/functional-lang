@@ -15,34 +15,44 @@ pub(super) type Stack<T> = Vec<T>;
 
 pub(super) struct ContextInner<'a> {
     ty_arena: InternedArena<'a, Type<'a>>,
+
+    ty_unknown: InternedType<'a>,
 }
 impl<'a> ContextInner<'a> {
     pub(super) fn new(arena: &'a Arena<Type<'a>>) -> Self {
+        let ty_arena = InternedArena::with_arena(arena);
+        let ty_unknown = ty_arena.intern(Type::Unknown);
+
         Self {
-            ty_arena: InternedArena::with_arena(arena),
+            ty_arena,
+            ty_unknown,
         }
     }
 }
 impl<'a, 'inn> TyArenaContext<'a> for &'inn ContextInner<'a> {
     type Inner = Self;
 
-    fn intern(&self, var: Type<'a>) -> InternedType<'a> {
-        self.ty_arena.intern(var)
-    }
-
     fn get_inner(&self) -> &'inn ContextInner<'a> {
         self
+    }
+
+    fn intern(&self, var: Type<'a>) -> InternedType<'a> {
+        self.ty_arena.intern(var)
     }
 }
 
 pub(super) trait TyArenaContext<'a> {
     type Inner: Borrow<ContextInner<'a>>;
 
+    fn get_inner(&self) -> Self::Inner;
+
     fn intern(&self, var: Type<'a>) -> InternedType<'a> {
         self.get_inner().borrow().intern(var)
     }
 
-    fn get_inner(&self) -> Self::Inner;
+    fn ty_unknown(&self) -> InternedType<'a> {
+        self.get_inner().borrow().ty_unknown
+    }
 }
 
 pub(super) trait TyVarContext<'a> {

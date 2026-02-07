@@ -290,8 +290,8 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
             } => {
                 let check_type = check_type.take();
                 let check_func = ctx.intern(Type::Arr {
-                    arg: ctx.intern(Type::Unknown),
-                    result: check_type.unwrap_or_else(|| ctx.intern(Type::Unknown)),
+                    arg: ctx.ty_unknown(),
+                    result: check_type.unwrap_or(ctx.ty_unknown()),
                 });
 
                 // try infer but fall back if it fails
@@ -337,7 +337,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
 
                         let check_func = ctx.intern(Type::Arr {
                             arg,
-                            result: check_type.unwrap_or_else(|| ctx.intern(Type::Unknown)),
+                            result: check_type.unwrap_or(ctx.ty_unknown()),
                         });
                         let inferred_func = expect_type(check_func, ty_abs, true, true, ctx)?;
 
@@ -445,7 +445,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         upper: Some(arg),
                         lower: Some(arg),
                     },
-                    result: check_type.unwrap_or_else(|| ctx.intern(Type::Unknown)),
+                    result: check_type.unwrap_or(ctx.ty_unknown()),
                 });
 
                 let (abs_term, abs) = abs_term.type_check(Some(check_abs), infer_ty_args, ctx)?;
@@ -622,7 +622,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
 
                             let check_func = ctx.intern(Type::Arr {
                                 arg: variant,
-                                result: check_result.unwrap_or_else(|| ctx.intern(Type::Unknown)),
+                                result: check_result.unwrap_or(ctx.ty_unknown()),
                             });
 
                             let (func_term, func) =
@@ -666,8 +666,8 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         .map(|(label, func_term)| -> Result<_, TypeCheckError> {
                             let (func_term, func) = func_term.type_check(
                                 Some(ctx.intern(Type::Arr {
-                                    arg: ctx.intern(Type::Unknown),
-                                    result: ctx.intern(Type::Unknown),
+                                    arg: ctx.ty_unknown(),
+                                    result: ctx.ty_unknown(),
                                 })),
                                 true,
                                 ctx,
