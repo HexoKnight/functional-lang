@@ -4,9 +4,9 @@ use crate::{
     common::WithInfo,
     reprs::untyped_ir as uir,
     typing::{
-        InternedType, TypeCheckError,
+        InternedType, TyConfig,
         context::{ContextInner, TyArenaContext, TyVarContext},
-        prepend,
+        error::{SpannedError, TypeCheckError, TypeCheckResult},
         subtyping::expect_type,
         ty::{TyBounds, Type},
     },
@@ -26,7 +26,7 @@ macro_rules! ctx {
 pub(super) trait TyEval<'i: 'a, 'a> {
     type Evaled;
 
-    fn eval<'inn>(&self, ctx: &ctx!()) -> Result<Self::Evaled, TypeCheckError>
+    fn eval<'inn>(&self, ctx: &ctx!()) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn;
 }
@@ -34,7 +34,7 @@ pub(super) trait TyEval<'i: 'a, 'a> {
 impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
     type Evaled = InternedType<'a>;
 
-    fn eval<'inn>(&self, ctx: &ctx!()) -> Result<Self::Evaled, TypeCheckError>
+    fn eval<'inn>(&self, ctx: &ctx!()) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn,
     {
@@ -88,7 +88,7 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
 impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::TyBounds<'i> {
     type Evaled = TyBounds<'a>;
 
-    fn eval<'inn>(&self, ctx: &ctx!()) -> Result<Self::Evaled, TypeCheckError>
+    fn eval<'inn>(&self, ctx: &ctx!()) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn,
     {
@@ -97,9 +97,17 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::TyBounds<'i> {
         let lower = lower.as_ref().map(|ty| ty.eval(ctx)).transpose()?;
         if let (Some(upper), Some(lower)) = (upper, lower) {
             // technically we don't really expect either but this is close enough
-            expect_type(upper, lower, true, false, ctx).map_err(prepend(
-                || "type bound error: upper bound must be supertype of lower bound",
-            ))?;
+            expect_type(upper, lower, true, TyConfig::ty_inference_disabled(), ctx).wrap_error(
+                || {
+                    SpannedError::new(
+                        "type mismatch: impossible bounds",
+                        "upper bound must be supertype of lower bound",
+                        // TODO: add span info to TyBounds
+                        "somewhere in this file",
+                        crate::reprs::common::Span { text: "", start: 0 },
+                    )
+                },
+            )?;
         }
         Ok(TyBounds { upper, lower })
     }
@@ -108,7 +116,7 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::TyBounds<'i> {
 impl<'i: 'a, 'a, T: TyEval<'i, 'a>> TyEval<'i, 'a> for Option<T> {
     type Evaled = Option<T::Evaled>;
 
-    fn eval<'inn>(&self, ctx: &ctx!()) -> Result<Self::Evaled, TypeCheckError>
+    fn eval<'inn>(&self, ctx: &ctx!()) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn,
     {

@@ -3,9 +3,9 @@ use itertools::{Itertools, zip_eq};
 use crate::{
     reprs::common::Lvl,
     typing::{
-        InternedType, TypeCheckError,
+        InternedType, TyConfig,
         context::{ContextInner, TyArenaContext, TyVarContext},
-        prepend, try_prepend,
+        error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
         ty::{TyBounds, TyDisplay, Type},
         ty_eq,
     },
@@ -20,8 +20,8 @@ mod context {
     use crate::{
         reprs::common::Lvl,
         typing::{
-            TypeCheckError,
             context::{ContextInner, Stack, TyArenaContext, TyVarContext, TyVarStack},
+            error::IllegalError,
             subtyping::inference::{TyConstraint, TyVar},
             ty::TyBounds,
         },
@@ -110,7 +110,7 @@ mod context {
             (new, constraint)
         }
 
-        pub(super) fn map_expected_level(&self, level: Lvl) -> Result<Lvl, TypeCheckError> {
+        pub(super) fn map_expected_level(&self, level: Lvl) -> Result<Lvl, IllegalError<'static>> {
             if level.deeper_than(Lvl::get_depth(&self.expected_ty_var_stack)) {
                 // bound after current context so we just move up
                 level
@@ -119,15 +119,17 @@ mod context {
                         Lvl::get_depth(&self.found_ty_var_stack),
                     )
                     .ok_or_else(|| {
-                        format!(
-                            "illegal failure: expected stack is larger than found stack: {level:?}"
+                        IllegalError::new(
+                            format!("expected stack is larger than found stack: {level:?}"),
+                            None,
                         )
                     })
             } else if level.deeper_than(self.orignial_stack_depth) {
                 // bound after the original stack so we can use unbound_map to translate
                 self.unbound_map.get(&level).copied().ok_or_else(|| {
-                    format!(
-                        "illegal failure: subtype-captured type variable level not found: {level:?}"
+                    IllegalError::new(
+                        format!("subtype-captured type variable level not found: {level:?}"),
+                        None,
                     )
                 })
             } else {
@@ -146,22 +148,34 @@ mod context {
                 .map(|(name, ty_var)| (*name, ty_var))
         }
 
+        #[track_caller]
         pub(super) fn get_expected_ty_var_unwrap(
             &self,
             level: Lvl,
-        ) -> Result<(&'a str, TyBounds<'a>), TypeCheckError> {
-            self.get_expected_ty_var(level).ok_or_else(|| {
-                format!("illegal failure: expected type variable level not found: {level:?}")
-            })
+        ) -> Result<(&'a str, TyBounds<'a>), IllegalError<'static>> {
+            // explicit match to allow `#[track_caller]`
+            match self.get_expected_ty_var(level) {
+                Some(ty_var) => Ok(ty_var),
+                None => Err(IllegalError::new(
+                    format!("expected type variable level not found: {level:?}"),
+                    None,
+                )),
+            }
         }
 
+        #[track_caller]
         pub(super) fn get_found_ty_var_unwrap(
             &self,
             level: Lvl,
-        ) -> Result<(&'a str, &TyVar<'a>), TypeCheckError> {
-            self.get_found_ty_var(level).ok_or_else(|| {
-                format!("illegal failure: found type variable level not found: {level:?}")
-            })
+        ) -> Result<(&'a str, &TyVar<'a>), IllegalError<'static>> {
+            // explicit match to allow `#[track_caller]`
+            match self.get_found_ty_var(level) {
+                Some(ty_var) => Ok(ty_var),
+                None => Err(IllegalError::new(
+                    format!("found type variable level not found: {level:?}"),
+                    None,
+                )),
+            }
         }
 
         pub(super) fn next_found_ty_var_level(&self) -> Lvl {
@@ -204,11 +218,11 @@ mod inference {
     use crate::{
         reprs::common::Lvl,
         typing::{
-            InternedType, TypeCheckError,
+            InternedType, TyConfig,
             context::{MultiContext, TyArenaContext},
+            error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
             merge::{join, meet},
             subtyping::{Context, expect_type_rec},
-            try_prepend,
             ty::{TyBounds, TyDisplay, Type},
             ty_eq,
         },
@@ -273,14 +287,14 @@ mod inference {
             expected: InternedType<'a>,
             subtype: bool,
             ctx: &Context<'a, '_>,
-        ) -> Result<(), TypeCheckError> {
+        ) -> Result<(), ContextError<'static>> {
             fn map_vars<'a>(
                 ty: InternedType<'a>,
                 get_bound: impl Fn(TyBounds<'a>) -> InternedType<'a>,
                 level: Lvl,
                 ctx: &Context<'a, '_>,
-            ) -> Result<InternedType<'a>, TypeCheckError> {
-                ty.try_map_ty_vars::<TypeCheckError>(
+            ) -> Result<InternedType<'a>, IllegalError<'static>> {
+                ty.try_map_ty_vars::<IllegalError<'static>>(
                     &mut |level_expected| {
                         // we convert from the expected stack to the found stack
                         let level_found = ctx.map_expected_level(level_expected)?;
@@ -331,14 +345,17 @@ mod inference {
             variance: Variance,
             subtype: bool,
             ctx: &Context<'a, '_>,
-        ) -> Result<InternedType<'a>, TypeCheckError> {
+        ) -> Result<InternedType<'a>, ContextError<'static>> {
             let num_refs = Rc::strong_count(&self.0);
             let Some(inner_cell) = Rc::into_inner(self.0) else {
                 // this is not strictly necessary but it failing is a pretty good indicator that
                 // something is up
-                return Err(format!(
-                    "illegal failure: not all TyContraint references have been dropped before satisfaction: {num_refs}",
-                ));
+                Err(IllegalError::new(
+                    format!(
+                        "not all TyContraint references have been dropped before satisfaction: {num_refs}",
+                    ),
+                    None,
+                ))?
             };
             let TyConstraintInner {
                 initial_bounds,
@@ -356,25 +373,61 @@ mod inference {
             // TODO: the context passed here is not correct and can cause illegal errors
             // but using the correct context (ie. some derivative of `ctx.fnd_ctx*()`)
             // causes a type arg inference regression
-            expect_type_rec(upper, lower, true, false, ctx).map_err(try_prepend(|| {
-                Ok(format!(
-                    "unable to satisfy constraints:\n\
-                    upper: {}\n\
-                    lower: {}",
-                    upper.display(ctx.fnd_ctx())?,
-                    lower.display(ctx.fnd_ctx())?
-                ))
-            }))?;
+            expect_type_rec(upper, lower, true, TyConfig::ty_inference_disabled(), ctx)
+                .try_wrap_error(|| {
+                    Ok(PlainContextError::new(format!(
+                        "unable to satisfy constraints:\n\
+                        upper: {}\n\
+                        lower: {}",
+                        upper.display(ctx.fnd_ctx())?,
+                        lower.display(ctx.fnd_ctx())?
+                    )))
+                })?;
 
-            debug_assert_eq!(
-                expect_type_rec(initial_bounds.get_upper(ctx), upper, true, false, ctx).map(|_| ()),
-                Ok(())
-            );
-            debug_assert_eq!(
-                expect_type_rec(initial_bounds.get_lower(ctx), lower, false, false, ctx)
-                    .map(|_| ()),
-                Ok(())
-            );
+            #[cfg(debug_assertions)]
+            {
+                use crate::typing::TyConfig;
+
+                let initial_upper = initial_bounds.get_upper(ctx);
+                expect_type_rec(
+                    initial_upper,
+                    upper,
+                    true,
+                    TyConfig::ty_inference_disabled(),
+                    ctx,
+                )
+                .try_wrap_error(|| {
+                    Ok(IllegalError::new(
+                        format!(
+                            "final upper type constraint:           {}\n\
+                            is not subtype of initial upper bound: {}",
+                            upper.display(ctx.fnd_ctx())?,
+                            initial_upper.display(ctx.fnd_ctx())?
+                        ),
+                        None,
+                    ))
+                })?;
+
+                let initial_lower = initial_bounds.get_lower(ctx);
+                expect_type_rec(
+                    initial_lower,
+                    lower,
+                    false,
+                    TyConfig::ty_inference_disabled(),
+                    ctx,
+                )
+                .try_wrap_error(|| {
+                    Ok(IllegalError::new(
+                        format!(
+                            "final lower type constraint:             {}\n\
+                            is not supertype of initial lower bound: {}",
+                            lower.display(ctx.fnd_ctx())?,
+                            initial_lower.display(ctx.fnd_ctx())?
+                        ),
+                        None,
+                    ))
+                })?;
+            }
 
             // see `constraint_variance` definition
             let unconstrained_variance = if subtype {
@@ -403,13 +456,16 @@ mod inference {
                 | (Variance::Invariant, Variance::Contravariant, true) => Ok(upper),
                 // invariant so there is no best type so we just try our best,
                 // though this may need to become a hard error in the future
-                (Variance::Invariant, Variance::Constant | Variance::Invariant, _) => Err(format!(
-                    "cannot infer a single type for invariant type argument\n\
-                    upper: {}\n\
-                    lower: {}",
-                    upper.display(ctx.fnd_ctx())?,
-                    lower.display(ctx.fnd_ctx())?
-                )),
+                (Variance::Invariant, Variance::Constant | Variance::Invariant, _) => {
+                    Err(PlainContextError::new(format!(
+                        "cannot infer a single type for invariant type argument\n\
+                        upper: {}\n\
+                        lower: {}",
+                        upper.display(ctx.fnd_ctx())?,
+                        lower.display(ctx.fnd_ctx())?
+                    ))
+                    .into())
+                }
             }
         }
     }
@@ -499,7 +555,7 @@ mod inference {
             &self,
             subtype: bool,
             ctx: &Context<'a, '_>,
-        ) -> Result<(), TypeCheckError> {
+        ) -> Result<(), IllegalError<'static>> {
             match self {
                 Type::TyAbs {
                     name,
@@ -565,10 +621,10 @@ pub(super) fn expect_type<'a: 'inn, 'inn>(
     expected: InternedType<'a>,
     found: InternedType<'a>,
     subtype: bool,
-    infer_ty_args: bool,
+    ty_config: TyConfig,
     ctx: &ctx!(),
-) -> Result<InternedType<'a>, TypeCheckError> {
-    expect_type_rec(expected, found, subtype, infer_ty_args, &Context::from(ctx))
+) -> Result<InternedType<'a>, ContextError<'static>> {
+    expect_type_rec(expected, found, subtype, ty_config, &Context::from(ctx))
 }
 
 /// Checks whether `found` can be used in place of `expected`.
@@ -585,9 +641,9 @@ fn expect_type_rec<'a>(
     expected: InternedType<'a>,
     found: InternedType<'a>,
     subtype: bool,
-    infer_ty_args: bool,
+    ty_config: TyConfig,
     ctx: &Context<'a, '_>,
-) -> Result<InternedType<'a>, TypeCheckError> {
+) -> Result<InternedType<'a>, ContextError<'static>> {
     fn super_sub_of<T>(expected: T, found: T, swapped: bool) -> (T, T) {
         maybe_swap(expected, found, swapped)
     }
@@ -613,7 +669,9 @@ fn expect_type_rec<'a>(
             found.update_unconstrained_variances(subtype, ctx)?;
             Ok(found)
         }
-        (_, Type::Unknown, _) => Err("illegal failure: Unknown cannot be a found type".to_string()),
+        (_, Type::Unknown, _) => {
+            Err(IllegalError::new("Unknown cannot be a found type", None).into())
+        }
 
         (
             Type::TyAbs {
@@ -630,10 +688,12 @@ fn expect_type_rec<'a>(
         ) => {
             // subtype bounds must enclose supertype bounds
             TyBounds::expect_bounds_rec(bounds_expected, bounds_found, subtype, ctx)
-                .map_err(prepend(|| {
-                    "bounds of subtype type arg must enclose those of the supertype type arg:"
-                        .to_string()
-                }))
+                .wrap_error(|| {
+                    PlainContextError::new(
+                        "bounds of subtype type arg must enclose those of the supertype type arg:"
+                            .to_string(),
+                    )
+                })
                 .and_then(|()| {
                     let (bounds_super, ctx_super) = if swapped {
                         (bounds_found, ctx.fnd_ctx())
@@ -644,7 +704,7 @@ fn expect_type_rec<'a>(
                         result_expected,
                         result_found,
                         subtype,
-                        infer_ty_args,
+                        ty_config,
                         // we choose the narrower bounds
                         &ctx.push_unbound_ty_var(name_expected, name_found, *bounds_super),
                     )
@@ -655,14 +715,14 @@ fn expect_type_rec<'a>(
                             result,
                         })
                     })
-                    .map_err(try_prepend(|| {
-                        Ok(format!(
+                    .try_wrap_error(|| {
+                        Ok(PlainContextError::new(format!(
                             "taking {} == {} with bounds: {}",
                             name_expected,
                             name_found,
                             bounds_super.display(ctx_super)?
-                        ))
-                    }))
+                        )))
+                    })
                 })
         }
         (
@@ -674,22 +734,29 @@ fn expect_type_rec<'a>(
             },
             _,
         ) => {
-            if !infer_ty_args {
-                return Err(format!(
+            if ty_config.infer_ty_args {
+                let (ctx_, constraint) = ctx.push_inferred_ty_var(name, *bounds);
+                expect_type_rec(expected, found, subtype, ty_config, &ctx_).and_then(|result| {
+                    drop(ctx_);
+                    let level = ctx.next_found_ty_var_level();
+                    let variance = result.get_variance_of(level);
+                    constraint
+                        .satisfy(variance, subtype, ctx)
+                        .map_err(ContextError::into_type_inference_err)
+                        .wrap_error(|| {
+                            PlainContextError::new(format!("failed to infer type argument: {name}"))
+                        })
+                        .map(|ty_arg| result.substitute_ty_var(level, ty_arg, ctx))
+                })
+            } else if ty_config.ty_infer_fail {
+                Err(ContextError::NonTerminalTypeInference)
+            } else {
+                Err(PlainContextError::new(format!(
                     "failed to infer type argument: {name}\n\
                     not allowed to infer type arguments in this position"
-                ));
+                ))
+                .into())
             }
-            let (ctx_, constraint) = ctx.push_inferred_ty_var(name, *bounds);
-            expect_type_rec(expected, found, subtype, true, &ctx_).and_then(|result| {
-                drop(ctx_);
-                let level = ctx.next_found_ty_var_level();
-                let variance = result.get_variance_of(level);
-                constraint
-                    .satisfy(variance, subtype, ctx)
-                    .map_err(prepend(|| format!("failed to infer type argument: {name}")))
-                    .map(|ty_arg| result.substitute_ty_var(level, ty_arg, ctx))
-            })
         }
         (Type::TyVar(level_expected), Type::TyVar(level_found), _) => {
             let mapped_level_expected = ctx.map_expected_level(*level_expected)?;
@@ -722,8 +789,14 @@ fn expect_type_rec<'a>(
             // no try block :(
         ) => (|| {
             Ok(ctx.intern(Type::Arr {
-                arg: expect_type_rec(arg_expected, arg_found, !subtype, false, ctx)?,
-                result: expect_type_rec(res_expected, res_found, subtype, infer_ty_args, ctx)?,
+                arg: expect_type_rec(
+                    arg_expected,
+                    arg_found,
+                    !subtype,
+                    ty_config.infer_ty_args(false),
+                    ctx,
+                )?,
+                result: expect_type_rec(res_expected, res_found, subtype, ty_config, ctx)?,
             }))
         })(),
         (Type::Enum(variants_expected), Type::Enum(variants_found), _) => {
@@ -740,7 +813,7 @@ fn expect_type_rec<'a>(
                         // and that the variant types maintain the same subtyping relationship
                         Ok((
                             *l,
-                            expect_type_rec(ty_expected, ty_found, subtype, infer_ty_args, ctx)?,
+                            expect_type_rec(ty_expected, ty_found, subtype, ty_config, ctx)?,
                         ))
                     } else {
                         let (ty_super, ctx_super) = if swapped {
@@ -748,11 +821,12 @@ fn expect_type_rec<'a>(
                         } else {
                             (expected, ctx.exp_ctx())
                         };
-                        Err(format!(
+                        Err(PlainContextError::new(format!(
                             "label '{l}' missing from supertype:\n\
                             | {}",
                             ty_super.display(ctx_super)?
                         ))
+                        .into())
                     }
                 })
                 .try_collect()
@@ -771,7 +845,7 @@ fn expect_type_rec<'a>(
                         // and that the field types maintain the same subtyping relationship
                         Ok((
                             *l,
-                            expect_type_rec(ty_expected, ty_found, subtype, infer_ty_args, ctx)?,
+                            expect_type_rec(ty_expected, ty_found, subtype, ty_config, ctx)?,
                         ))
                     } else {
                         let (ty_sub, ctx_sub) = if swapped {
@@ -779,11 +853,12 @@ fn expect_type_rec<'a>(
                         } else {
                             (found, ctx.fnd_ctx())
                         };
-                        Err(format!(
+                        Err(PlainContextError::new(format!(
                             "label '{l}' missing from subtype:\n\
                             | {}",
                             ty_sub.display(ctx_sub)?
                         ))
+                        .into())
                     }
                 })
                 .try_collect()
@@ -795,26 +870,33 @@ fn expect_type_rec<'a>(
             if len_expected == len_found {
                 zip_eq(elems_expected, elems_found)
                     .map(|(elem_expected, elem_found)| {
-                        expect_type_rec(elem_expected, elem_found, subtype, infer_ty_args, ctx)
+                        expect_type_rec(elem_expected, elem_found, subtype, ty_config, ctx)
                     })
                     .try_collect()
                     .map(|elems| ctx.intern(Type::Tuple(elems)))
             } else {
-                Err(format!(
+                Err(PlainContextError::new(format!(
                     "tuples have different lengths\n\
                     expected tuple with length {len_expected}: {}\n\
                     found    tuple with length {len_found   }: {}",
                     expected.display(ctx.exp_ctx())?,
                     found.display(ctx.fnd_ctx())?
                 ))
+                .into())
             }
         }
-        (_, Type::Any, true) | (Type::Any, _, false) => Err("_ is the any type: \
+        (_, Type::Any, true) | (Type::Any, _, false) => Err(PlainContextError::new(
+            "_ is the any type: \
             it has no supertypes bar itself and cannot be constructed (directly)"
-            .to_string()),
-        (Type::Never, _, true) | (_, Type::Never, false) => Err("! is the never type: \
+                .to_string(),
+        )
+        .into()),
+        (Type::Never, _, true) | (_, Type::Never, false) => Err(PlainContextError::new(
+            "! is the never type: \
             it has no subtypes bar itself and cannot be constructed"
-            .to_string()),
+                .to_string(),
+        )
+        .into()),
         // not using _ to avoid catching more cases than intended
         (
             Type::TyAbs { .. }
@@ -825,18 +907,18 @@ fn expect_type_rec<'a>(
             | Type::Bool,
             Type::Arr { .. } | Type::Enum(..) | Type::Record(..) | Type::Tuple(..) | Type::Bool,
             _,
-        ) => Err("types are incompatible".to_string()),
+        ) => Err(PlainContextError::new("types are incompatible".to_string()).into()),
     }
-    .map_err(try_prepend(|| {
-        Ok(format!(
+    .try_wrap_error(|| {
+        Ok(PlainContextError::new(format!(
             "expected (or a {relation} of):\n\
             |   {}\n\
             found:\n\
             |   {}",
             expected.display(ctx.exp_ctx())?,
             found.display(ctx.fnd_ctx())?
-        ))
-    }))
+        )))
+    })
 }
 
 fn handle_found_ty_var<'a>(
@@ -845,7 +927,7 @@ fn handle_found_ty_var<'a>(
     level_found: Lvl,
     subtype: bool,
     ctx: &Context<'a, '_>,
-) -> Result<InternedType<'a>, TypeCheckError> {
+) -> Result<InternedType<'a>, ContextError<'static>> {
     let (name, var_found) = ctx.get_found_ty_var_unwrap(level_found)?;
     match var_found {
         TyVar::Unbound(bounds_found) => {
@@ -856,24 +938,32 @@ fn handle_found_ty_var<'a>(
             } else {
                 bounds_found.get_lower(ctx)
             };
-            expect_type_rec(expected, bound_found, subtype, false, ctx).map_err(try_prepend(
-                || {
-                    Ok(format!(
-                        "subtyping must be guaranteed \
-                        for all possible instantiations of type var: {}\n\
-                        for example, one such instantiation is: {}",
-                        found.display(ctx.fnd_ctx())?,
-                        bound_found.display(ctx.fnd_ctx())?
-                    ))
-                },
-            ))?;
+            expect_type_rec(
+                expected,
+                bound_found,
+                subtype,
+                TyConfig::ty_inference_disabled(),
+                ctx,
+            )
+            .try_wrap_error(|| {
+                Ok(PlainContextError::new(format!(
+                    "subtyping must be guaranteed \
+                    for all possible instantiations of type var: {}\n\
+                    for example, one such instantiation is: {}",
+                    found.display(ctx.fnd_ctx())?,
+                    bound_found.display(ctx.fnd_ctx())?
+                )))
+            })?;
         }
         TyVar::Inferred(ty_constraint) => {
             ty_constraint
                 .constrain(level_found, expected, subtype, ctx)
-                .map_err(try_prepend(|| {
-                    Ok(format!("failed to infer type argument: {name}"))
-                }))?;
+                .map_err(ContextError::into_type_inference_err)
+                .try_wrap_error(|| {
+                    Ok(PlainContextError::new(format!(
+                        "failed to infer type argument: {name}"
+                    )))
+                })?;
         }
     }
     Ok(found)
@@ -885,7 +975,7 @@ fn handle_expected_ty_var<'a>(
     level_expected: Lvl,
     subtype: bool,
     ctx: &Context<'a, '_>,
-) -> Result<InternedType<'a>, TypeCheckError> {
+) -> Result<InternedType<'a>, ContextError<'static>> {
     let (_, bounds_expected) = ctx.get_expected_ty_var_unwrap(level_expected)?;
     // a type is guaranteed to be a subtype/supertype of the instantiated type iff it is a
     // subtype/supertype of the lower/upper bound (due to the transitivity of subtyping)
@@ -894,15 +984,22 @@ fn handle_expected_ty_var<'a>(
     } else {
         bounds_expected.get_upper(ctx)
     };
-    expect_type_rec(bound_expected, found, subtype, false, ctx).map_err(try_prepend(|| {
-        Ok(format!(
+    expect_type_rec(
+        bound_expected,
+        found,
+        subtype,
+        TyConfig::ty_inference_disabled(),
+        ctx,
+    )
+    .try_wrap_error(|| {
+        Ok(PlainContextError::new(format!(
             "subtyping must be guaranteed \
             for all possible instantiations of type var: {}\n\
             for example, one such instantiation is: {}",
             expected.display(ctx.exp_ctx())?,
             bound_expected.display(ctx.exp_ctx())?
-        ))
-    }))
+        )))
+    })
 }
 
 impl<'a> TyBounds<'a> {
@@ -911,7 +1008,7 @@ impl<'a> TyBounds<'a> {
         found: &Self,
         encloses: bool,
         ctx: &ctx!(),
-    ) -> Result<(), TypeCheckError>
+    ) -> Result<(), ContextError<'static>>
     where
         'a: 'inn,
     {
@@ -928,7 +1025,7 @@ impl<'a> TyBounds<'a> {
         found: &Self,
         encloses: bool,
         ctx: &Context<'a, '_>,
-    ) -> Result<(), TypeCheckError> {
+    ) -> Result<(), ContextError<'static>> {
         fn inner_outer_of<T>(expected: T, found: T, swapped: bool) -> (T, T) {
             maybe_swap(expected, found, swapped)
         }
@@ -948,37 +1045,47 @@ impl<'a> TyBounds<'a> {
         if let Some(upper_outer) = outer.get_upper(ctx).known_not_any() {
             let upper_inner = inner.get_upper(ctx);
             let (upper_expected, upper_found) = exp_found_of(upper_inner, upper_outer, swapped);
-            expect_type_rec(upper_expected, upper_found, !encloses, false, ctx).map_err(
-                try_prepend(|| {
-                    Ok(format!(
-                        "expected upper bound (or {}):\n\
-                        {}\n\
-                        found upper bound:\n\
-                        {}",
-                        if encloses { "higher" } else { "lower" },
-                        upper_expected.display(ctx.exp_ctx())?,
-                        upper_found.display(ctx.fnd_ctx())?
-                    ))
-                }),
-            )?;
+            expect_type_rec(
+                upper_expected,
+                upper_found,
+                !encloses,
+                TyConfig::ty_inference_disabled(),
+                ctx,
+            )
+            .try_wrap_error(|| {
+                Ok(PlainContextError::new(format!(
+                    "expected upper bound (or {}):\n\
+                    {}\n\
+                    found upper bound:\n\
+                    {}",
+                    if encloses { "higher" } else { "lower" },
+                    upper_expected.display(ctx.exp_ctx())?,
+                    upper_found.display(ctx.fnd_ctx())?
+                )))
+            })?;
         }
 
         if let Some(lower_outer) = outer.get_lower(ctx).known_not_never() {
             let lower_inner = inner.get_lower(ctx);
             let (lower_expected, lower_found) = exp_found_of(lower_inner, lower_outer, swapped);
-            expect_type_rec(lower_expected, lower_found, encloses, false, ctx).map_err(
-                try_prepend(|| {
-                    Ok(format!(
-                        "expected lower bound (or {}):\n\
-                        {}\n\
-                        found lower bound:\n\
-                        {}",
-                        if encloses { "lower" } else { "higher" },
-                        lower_expected.display(ctx.exp_ctx())?,
-                        lower_found.display(ctx.fnd_ctx())?
-                    ))
-                }),
-            )?;
+            expect_type_rec(
+                lower_expected,
+                lower_found,
+                encloses,
+                TyConfig::ty_inference_disabled(),
+                ctx,
+            )
+            .try_wrap_error(|| {
+                Ok(PlainContextError::new(format!(
+                    "expected lower bound (or {}):\n\
+                    {}\n\
+                    found lower bound:\n\
+                    {}",
+                    if encloses { "lower" } else { "higher" },
+                    lower_expected.display(ctx.exp_ctx())?,
+                    lower_found.display(ctx.fnd_ctx())?
+                )))
+            })?;
         }
         Ok(())
     }

@@ -20,7 +20,7 @@ fn run_input<'i>(input: &'i str) -> Result<(String, String), CompilationError<'i
     let ast = parsing::Parser::default().parse(input)?;
     let untyped_ir = validation::validate(&ast)?;
 
-    let (typed_ir, ty) = typing::type_check(&untyped_ir).map_err(info("type check failure"))?;
+    let (typed_ir, ty) = typing::type_check(&untyped_ir)?;
 
     let value = evaluation::evaluate(&typed_ir)?;
 

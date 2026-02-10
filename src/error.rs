@@ -1,6 +1,4 @@
-use std::borrow::Cow;
-
-use annotate_snippets::{Group, Level, Renderer};
+use annotate_snippets::{Group, Renderer};
 
 use crate::{
     evaluation::EvaluationError, parsing::ParseError, typing::TypeCheckError,
@@ -10,7 +8,7 @@ use crate::{
 pub enum CompilationError<'i> {
     Parse(ParseError<'i>),
     Validation(ValidationError<'i>),
-    TypeCheck(TypeCheckError),
+    TypeCheck(TypeCheckError<'i>),
     Evaluation(EvaluationError),
 }
 
@@ -26,8 +24,8 @@ impl<'i> From<ValidationError<'i>> for CompilationError<'i> {
     }
 }
 
-impl From<TypeCheckError> for CompilationError<'_> {
-    fn from(value: TypeCheckError) -> Self {
+impl<'i> From<TypeCheckError<'i>> for CompilationError<'i> {
+    fn from(value: TypeCheckError<'i>) -> Self {
         Self::TypeCheck(value)
     }
 }
@@ -39,23 +37,16 @@ impl From<EvaluationError> for CompilationError<'_> {
 }
 
 impl<'i> CompilationError<'i> {
-    pub fn into_record(self, source: &'i str, origin: impl Into<Cow<'i, str>>) -> Vec<Group<'i>> {
-        fn string_to_record(str: String) -> Vec<Group<'static>> {
-            let group = Level::ERROR
-                .primary_title("error")
-                .element(Level::ERROR.message(str));
-            vec![group]
-        }
-
+    pub fn into_record(self, source: &'i str, origin: &'i str) -> Vec<Group<'i>> {
         match self {
             Self::Parse(parse_error) => parse_error.into_record(source, origin),
             Self::Validation(validation_error) => validation_error.into_record(source, origin),
-            Self::TypeCheck(e) => string_to_record(e),
+            Self::TypeCheck(type_check_error) => type_check_error.into_record(source, origin),
             Self::Evaluation(evaluation_error) => evaluation_error.into_record(),
         }
     }
 
-    pub fn render_styled(self, source: &'i str, origin: impl Into<Cow<'i, str>>) -> String {
+    pub fn render_styled(self, source: &'i str, origin: &'i str) -> String {
         Renderer::styled().render(&self.into_record(source, origin))
     }
 }

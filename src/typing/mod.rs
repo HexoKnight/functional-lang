@@ -6,12 +6,14 @@ use crate::{
     reprs::common::{ArgStructure, Lvl},
     typing::{
         context::{TyArenaContext, TyVarContext},
+        error::SpannedError,
         ty::{TyBounds, TyDisplay, Type},
     },
 };
 
 mod checking;
 mod context;
+mod error;
 mod eval;
 mod merge;
 mod subtyping;
@@ -19,9 +21,34 @@ mod ty;
 
 type InternedType<'a> = &'a Type<'a>;
 
-pub type TypeCheckError = String;
-
 pub use self::checking::type_check;
+pub use self::error::TypeCheckError;
+
+#[derive(Copy, Clone)]
+struct TyConfig {
+    /// whether inferring type arguments is allowed
+    infer_ty_args: bool,
+    /// whether failing to infer types is allowed (ie. will be caught)
+    ty_infer_fail: bool,
+}
+impl TyConfig {
+    fn infer_ty_args(mut self, infer_ty_args: bool) -> Self {
+        self.infer_ty_args = infer_ty_args;
+        self
+    }
+
+    fn ty_infer_fail(mut self, ty_infer_fail: bool) -> Self {
+        self.ty_infer_fail = ty_infer_fail;
+        self
+    }
+
+    fn ty_inference_disabled() -> Self {
+        Self {
+            infer_ty_args: false,
+            ty_infer_fail: false,
+        }
+    }
+}
 
 fn ty_eq<'a>(ty1: InternedType<'a>, ty2: InternedType<'a>) -> bool {
     std::ptr::eq(ty1, ty2)
@@ -32,48 +59,73 @@ impl<'a> Type<'a> {
         &self,
         arg_structure: &ArgStructure,
         ctx: &(impl TyArenaContext<'a> + TyVarContext<'a>),
-    ) -> Result<impl Iterator<Item = &Self>, TypeCheckError> {
+    ) -> Result<impl Iterator<Item = &Self>, TypeCheckError<'static>> {
         fn inner<'a, 's>(
             arg_structure: &ArgStructure,
             ty: &'s Type<'a>,
             ctx: &(impl TyArenaContext<'a> + TyVarContext<'a>),
             output: &mut impl FnMut(&'s Type<'a>),
-        ) -> Result<(), TypeCheckError> {
+        ) -> Result<(), TypeCheckError<'static>> {
             match arg_structure {
                 ArgStructure::Record(st_fields) => {
                     let Type::Record(ty_fields) = ty else {
-                        return Err(format!(
-                            "cannot record-destructure value of type {ty}",
-                            ty = ty.display(ctx)?
-                        ));
+                        Err(SpannedError::new(
+                            "type mismatch: record-destructure non-record",
+                            format!(
+                                "cannot record-destructure value of type {ty}",
+                                ty = ty.display(ctx)?
+                            ),
+                            // TODO: add span info to ArgStructure (or something like that)
+                            "somewhere in this file",
+                            crate::reprs::common::Span { text: "", start: 0 },
+                        ))?
                     };
 
                     st_fields.iter().try_for_each(|(l, st)| {
                         if let Some(ty) = ty_fields.0.get(l) {
                             inner(st, ty, ctx, output)
                         } else {
-                            Err(format!(
-                                "destructured record has field with label '{l}'\n\
+                            Err(SpannedError::new(
+                                "type mismatch: record-destructure missing field",
+                                format!(
+                                    "destructured record has field with label '{l}'\n\
                                 while it's missing from it's type"
-                            ))
+                                ),
+                                // TODO
+                                "somewhere in this file",
+                                crate::reprs::common::Span { text: "", start: 0 },
+                            ))?
                         }
                     })?;
                 }
 
                 ArgStructure::Tuple(st_elems) => {
                     let Type::Tuple(ty_elems) = ty else {
-                        return Err(format!(
-                            "cannot tuple-destructure value of type {ty}",
-                            ty = ty.display(ctx)?
-                        ));
+                        Err(SpannedError::new(
+                            "type mismatch: tuple-destructure non-tuple",
+                            format!(
+                                "cannot tuple-destructure value of type {ty}",
+                                ty = ty.display(ctx)?
+                            ),
+                            // TODO
+                            "somewhere in this file",
+                            crate::reprs::common::Span { text: "", start: 0 },
+                        ))?
                     };
 
                     let st_len = st_elems.len();
                     let ty_len = ty_elems.len();
                     if st_len != ty_len {
-                        return Err(format!(
-                            "destructured tuple has {st_len} elements\nwhile it's type has {ty_len} elements"
-                        ));
+                        Err(SpannedError::new(
+                            "type mismatch: tuple-destructure with wrong number of elements",
+                            format!(
+                                "destructured tuple has {st_len} elements\n\
+                                while it's type has {ty_len} elements"
+                            ),
+                            // TODO
+                            "somewhere in this file",
+                            crate::reprs::common::Span { text: "", start: 0 },
+                        ))?;
                     }
                     zip_eq(st_elems, ty_elems)
                         .try_for_each(|(st, ty)| inner(st, ty, ctx, output))?;
@@ -176,7 +228,7 @@ impl<'a> Type<'a> {
     fn upper_concrete(
         &'a self,
         ctx: &(impl TyArenaContext<'a> + TyVarContext<'a, TyVar = TyBounds<'a>>),
-    ) -> Result<&'a Self, TypeCheckError> {
+    ) -> Result<&'a Self, TypeCheckError<'static>> {
         match self {
             Type::TyVar(level) => ctx
                 .get_ty_var_unwrap(*level)?
@@ -239,32 +291,5 @@ impl<'a> Type<'a> {
             | Type::Any
             | Type::Never => Some(self),
         }
-    }
-}
-
-fn prepend<'s, F, S>(f: F) -> impl FnOnce(TypeCheckError) -> TypeCheckError
-where
-    F: FnOnce() -> S,
-    S: Into<std::borrow::Cow<'s, str>>,
-{
-    |mut e| {
-        e.insert(0, '\n');
-        e.insert_str(0, &f().into());
-        e
-    }
-}
-
-fn try_prepend<'s, F, S>(f: F) -> impl FnOnce(TypeCheckError) -> TypeCheckError
-where
-    F: FnOnce() -> Result<S, TypeCheckError>,
-    S: Into<std::borrow::Cow<'s, str>>,
-{
-    |mut e| match f() {
-        Ok(s) => {
-            e.insert(0, '\n');
-            e.insert_str(0, &s.into());
-            e
-        }
-        Err(e) => e,
     }
 }

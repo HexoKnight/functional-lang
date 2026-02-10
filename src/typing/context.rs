@@ -5,7 +5,7 @@ use typed_arena::Arena;
 use crate::{
     intern::InternedArena,
     reprs::common::Lvl,
-    typing::{InternedType, TypeCheckError, ty::Type},
+    typing::{InternedType, error::IllegalError, ty::Type},
 };
 
 // doesn't suffer from the same dropck issues as self references
@@ -62,9 +62,19 @@ pub(super) trait TyVarContext<'a> {
 
     fn get_ty_var(&self, level: Lvl) -> Option<(&'a str, Self::TyVar)>;
 
-    fn get_ty_var_unwrap(&self, level: Lvl) -> Result<(&'a str, Self::TyVar), TypeCheckError> {
-        self.get_ty_var(level)
-            .ok_or_else(|| format!("illegal failure: type variable level not found: {level:?}"))
+    #[track_caller]
+    fn get_ty_var_unwrap(
+        &self,
+        level: Lvl,
+    ) -> Result<(&'a str, Self::TyVar), IllegalError<'static>> {
+        // explicit match to allow `#[track_caller]`
+        match self.get_ty_var(level) {
+            Some(ty_var) => Ok(ty_var),
+            None => Err(IllegalError::new(
+                format!("type variable level not found: {level:?}"),
+                None,
+            )),
+        }
     }
 
     fn next_ty_var_level(&self) -> Lvl;
@@ -107,7 +117,10 @@ where
         self.1.get_ty_vars()
     }
 
-    fn get_ty_var_unwrap(&self, level: Lvl) -> Result<(&'a str, Self::TyVar), TypeCheckError> {
+    fn get_ty_var_unwrap(
+        &self,
+        level: Lvl,
+    ) -> Result<(&'a str, Self::TyVar), IllegalError<'static>> {
         self.1.get_ty_var_unwrap(level)
     }
 }

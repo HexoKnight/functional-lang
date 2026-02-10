@@ -3,8 +3,9 @@ use itertools::{Itertools, zip_eq};
 use crate::{
     common::{hashmap_intersection, hashmap_union},
     typing::{
-        InternedType, TypeCheckError,
+        InternedType, TyConfig,
         context::{ContextInner, TyArenaContext, TyVarContext},
+        error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
         subtyping::expect_type,
         ty::{TyBounds, TyDisplay, Type},
         ty_eq,
@@ -33,22 +34,22 @@ fn merge<'a: 'inn, 'inn>(
     types: impl IntoIterator<Item = InternedType<'a>>,
     join: bool,
     ctx: &ctx!(),
-) -> Result<InternedType<'a>, TypeCheckError> {
+) -> Result<InternedType<'a>, ContextError<'static>> {
     fn merge2<'a: 'inn, 'inn>(
         ty1: InternedType<'a>,
         ty2: InternedType<'a>,
         join: bool,
         ctx: &ctx!(),
-    ) -> Result<InternedType<'a>, TypeCheckError> {
+    ) -> Result<InternedType<'a>, ContextError<'static>> {
         // these checks are meant as optimisations, and shouldn't be necessary for correctness
         if ty_eq(ty1, ty2) {
             return Ok(ty1);
         }
         // TODO(proper errors): catch specifically subtyping errors
-        if expect_type(ty1, ty2, join, false, ctx).is_ok() {
+        if expect_type(ty1, ty2, join, TyConfig::ty_inference_disabled(), ctx).is_ok() {
             return Ok(ty1);
         }
-        if expect_type(ty1, ty2, !join, false, ctx).is_ok() {
+        if expect_type(ty1, ty2, !join, TyConfig::ty_inference_disabled(), ctx).is_ok() {
             return Ok(ty2);
         }
 
@@ -100,13 +101,13 @@ fn merge<'a: 'inn, 'inn>(
                 return if level1 == level2 {
                     Ok(ty1)
                 } else {
-                    return Err(format!(
+                    Err(PlainContextError::new(format!(
                         "cannot {op} type variables:\n\
                         variable 1: {ty1}\n\
                         variable 2: {ty2}",
                         ty1 = ty1.display(ctx)?,
                         ty2 = ty2.display(ctx)?
-                    ));
+                    )))?
                 };
             }
             (
@@ -171,20 +172,21 @@ fn merge<'a: 'inn, 'inn>(
                             .try_collect()?,
                     )
                 } else if join {
-                    return Err(format!(
+                    Err(PlainContextError::new(format!(
                         "cannot {op} tuples with different lengths:\n\
                         tuple 1: {len1} elements: {ty1}\n\
                         tuple 2: {len2} elements: {ty2}",
                         ty1 = ty1.display(ctx)?,
                         ty2 = ty2.display(ctx)?
-                    ));
+                    )))?
                 } else {
                     Type::Never
                 }
             }
-            (Type::Unknown, _) | (_, Type::Unknown) => {
-                return Err("illegal failure: unknown type should never be merged".to_string());
-            }
+            (Type::Unknown, _) | (_, Type::Unknown) => Err(IllegalError::new(
+                "unknown type should never be merged",
+                None,
+            ))?,
             (Type::Bool, Type::Bool) => Type::Bool,
             (ty_super @ Type::Any, ty_sub)
             | (ty_sub, ty_super @ Type::Any)
@@ -200,25 +202,54 @@ fn merge<'a: 'inn, 'inn>(
                 | Type::Tuple(..)
                 | Type::Bool,
                 _,
-            ) => {
-                return Err(format!(
-                    "cannot {op} incompatible types:\n\
-                    type 1: {ty1}\n\
-                    type 2: {ty2}\n",
-                    ty1 = ty1.display(ctx)?,
-                    ty2 = ty2.display(ctx)?
-                ));
-            }
+            ) => Err(PlainContextError::new(format!(
+                "cannot {op} incompatible types:\n\
+                type 1: {ty1}\n\
+                type 2: {ty2}\n",
+                ty1 = ty1.display(ctx)?,
+                ty2 = ty2.display(ctx)?
+            )))?,
         };
 
         let ty = ctx.intern(ty);
 
+        #[cfg(debug_assertions)]
         if join {
-            debug_assert_eq!(expect_type(ty, ty1, true, false, ctx).map(|_| ()), Ok(()));
-            debug_assert_eq!(expect_type(ty, ty2, true, false, ctx).map(|_| ()), Ok(()));
+            [ty1, ty2]
+                .into_iter()
+                .try_for_each(|ty_input| {
+                    expect_type(ty, ty_input, true, TyConfig::ty_inference_disabled(), ctx)
+                        .map(|_| ())
+                })
+                .try_wrap_error(|| {
+                    Ok(IllegalError::new(
+                        format!(
+                            "join result:               {}\n\
+                            is not supertype of input: {}",
+                            ty.display(ctx)?,
+                            ty1.display(ctx)?,
+                        ),
+                        None,
+                    ))
+                })?;
         } else {
-            debug_assert_eq!(expect_type(ty, ty1, false, false, ctx).map(|_| ()), Ok(()));
-            debug_assert_eq!(expect_type(ty, ty2, false, false, ctx).map(|_| ()), Ok(()));
+            [ty1, ty2]
+                .into_iter()
+                .try_for_each(|ty_input| {
+                    expect_type(ty, ty_input, false, TyConfig::ty_inference_disabled(), ctx)
+                        .map(|_| ())
+                })
+                .try_wrap_error(|| {
+                    Ok(IllegalError::new(
+                        format!(
+                            "meet result:             {}\n\
+                            is not subtype of input: {}",
+                            ty.display(ctx)?,
+                            ty1.display(ctx)?,
+                        ),
+                        None,
+                    ))
+                })?;
         }
 
         Ok(ty)
@@ -251,7 +282,7 @@ fn merge<'a: 'inn, 'inn>(
 pub(super) fn join<'a: 'inn, 'inn>(
     types: impl IntoIterator<Item = InternedType<'a>>,
     ctx: &ctx!(),
-) -> Result<InternedType<'a>, TypeCheckError> {
+) -> Result<InternedType<'a>, ContextError<'static>> {
     merge(types, true, ctx)
 }
 
@@ -272,6 +303,6 @@ pub(super) fn join<'a: 'inn, 'inn>(
 pub(super) fn meet<'a: 'inn, 'inn>(
     types: impl IntoIterator<Item = InternedType<'a>>,
     ctx: &ctx!(),
-) -> Result<InternedType<'a>, TypeCheckError> {
+) -> Result<InternedType<'a>, ContextError<'static>> {
     merge(types, false, ctx)
 }

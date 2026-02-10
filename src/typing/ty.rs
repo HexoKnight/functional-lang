@@ -4,8 +4,8 @@ use crate::{
     hashed_hashmap::HashedHashMap,
     reprs::common::{Label, Lvl},
     typing::{
-        TypeCheckError,
         context::{TyArenaContext, TyVarContext, TyVarStack},
+        error::IllegalError,
     },
 };
 
@@ -68,15 +68,18 @@ pub trait TyDisplay<'ctx> {
         &self,
         ctx: &TyVarStack<'ctx, ()>,
         w: &mut String,
-    ) -> Result<(), TypeCheckError>;
+    ) -> Result<(), IllegalError<'static>>;
 
-    fn display(&self, ctx: impl Into<TyVarStack<'ctx, ()>>) -> Result<String, TypeCheckError> {
+    fn display(
+        &self,
+        ctx: impl Into<TyVarStack<'ctx, ()>>,
+    ) -> Result<String, IllegalError<'static>> {
         let mut string = String::new();
         self.write_display(&ctx.into(), &mut string)?;
         Ok(string)
     }
 
-    fn is_empty(&self, ctx: &TyVarStack<'ctx, ()>) -> Result<bool, TypeCheckError>;
+    fn is_empty(&self, ctx: &TyVarStack<'ctx, ()>) -> Result<bool, IllegalError<'static>>;
 }
 
 impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
@@ -84,7 +87,7 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
         &self,
         ctx: &TyVarStack<'ctx, ()>,
         w: &mut String,
-    ) -> Result<(), TypeCheckError> {
+    ) -> Result<(), IllegalError<'static>> {
         match self {
             Type::TyAbs {
                 name,
@@ -172,7 +175,7 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
         Ok(())
     }
 
-    fn is_empty(&self, _ctx: &TyVarStack<'ctx, ()>) -> Result<bool, TypeCheckError> {
+    fn is_empty(&self, _ctx: &TyVarStack<'ctx, ()>) -> Result<bool, IllegalError<'static>> {
         Ok(false)
     }
 }
@@ -182,7 +185,7 @@ impl<'ctx> TyDisplay<'ctx> for TyBounds<'ctx> {
         &self,
         ctx: &TyVarStack<'ctx, ()>,
         w: &mut String,
-    ) -> Result<(), TypeCheckError> {
+    ) -> Result<(), IllegalError<'static>> {
         let Self { upper, lower } = self;
 
         if let Some(upper) = upper {
@@ -199,7 +202,7 @@ impl<'ctx> TyDisplay<'ctx> for TyBounds<'ctx> {
         Ok(())
     }
 
-    fn is_empty(&self, _ctx: &TyVarStack<'ctx, ()>) -> Result<bool, TypeCheckError> {
+    fn is_empty(&self, _ctx: &TyVarStack<'ctx, ()>) -> Result<bool, IllegalError<'static>> {
         let Self { upper, lower } = self;
 
         Ok(upper.is_none() && lower.is_none())

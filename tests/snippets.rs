@@ -56,12 +56,12 @@ mod utils {
         let untyped_ir = validate_success(src);
         match type_check(&untyped_ir) {
             Ok(o) => o,
-            Err(e) => panic!("{}", e),
+            Err(e) => panic!("{}", render_error(e, src, "<snippet>")),
         }
     }
 
     #[track_caller]
-    pub fn type_check_failure(src: &str) -> TypeCheckError {
+    pub fn type_check_failure(src: &str) -> TypeCheckError<'_> {
         let ast = validate_success(src);
         match type_check(&ast) {
             Ok(o) => panic!("type check success:\n'{}'\n{:#?}", src, o),
@@ -390,6 +390,9 @@ fn ty_abs() {
 #[test]
 fn ty_app() {
     evaluate_eq(r"(?T \x:T x) [bool] true", "true");
+
+    type_check_failure(r"(?T>enum{} \x:T x) [()]");
+
     type_check_eq(
         r"(?T \x:T x) .\id: [T] T -> T id",
         r"(?A \a:A a) .\id: [T] T -> T id",
@@ -455,6 +458,9 @@ fn type_inference() {
     evaluate_check_type(r"match {} .\x:enum{} -> bool x", "enum {} -> bool");
 
     evaluate_check_type(r"enum wrap .\x:bool->_ x", "bool -> _");
+
+    type_check_failure(r"enum wrap .\x x");
+    type_check_failure(r"enum wrap");
 
     evaluate_check_type(
         r"(\op: (bool, bool -> ()) -> () op (false, \x ())) (\(b, f) f b)",
