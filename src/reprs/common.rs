@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::newtype_derive;
+use crate::{common::WithInfo, newtype_derive};
 
 #[derive(Copy, Clone, Debug)]
 pub struct Span<'i> {
@@ -18,8 +18,10 @@ impl Span<'_> {
     }
 }
 
+pub type ArgStructure<'i> = WithInfo<Span<'i>, RawArgStructure<'i>>;
+
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub enum ArgStructure<'i> {
+pub enum RawArgStructure<'i> {
     Record(Box<[(Label<'i>, ArgStructure<'i>)]>),
     Tuple(Box<[ArgStructure<'i>]>),
     Var,

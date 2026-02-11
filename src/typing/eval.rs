@@ -1,3 +1,5 @@
+use std::iter::once;
+
 use itertools::Itertools;
 
 use crate::{
@@ -93,23 +95,34 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::TyBounds<'i> {
         'a: 'inn,
     {
         let uir::TyBounds { upper, lower } = self;
-        let upper = upper.as_ref().map(|ty| ty.eval(ctx)).transpose()?;
-        let lower = lower.as_ref().map(|ty| ty.eval(ctx)).transpose()?;
-        if let (Some(upper), Some(lower)) = (upper, lower) {
+        let upper = if let Some(ty @ WithInfo(span, _)) = upper {
+            Some((span, ty.eval(ctx)?))
+        } else {
+            None
+        };
+        let lower = if let Some(ty @ WithInfo(span, _)) = lower {
+            Some((span, ty.eval(ctx)?))
+        } else {
+            None
+        };
+        if let (Some((upper_span, upper)), Some((lower_span, lower))) = (upper, lower) {
             // technically we don't really expect either but this is close enough
             expect_type(upper, lower, true, TyConfig::ty_inference_disabled(), ctx).wrap_error(
                 || {
-                    SpannedError::new(
+                    SpannedError::with_context(
                         "type mismatch: impossible bounds",
                         "upper bound must be supertype of lower bound",
-                        // TODO: add span info to TyBounds
-                        "somewhere in this file",
-                        crate::reprs::common::Span { text: "", start: 0 },
+                        "upper bound",
+                        *upper_span,
+                        once((*lower_span, "lower bound")),
                     )
                 },
             )?;
         }
-        Ok(TyBounds { upper, lower })
+        Ok(TyBounds {
+            upper: upper.map(|(_, ty)| ty),
+            lower: lower.map(|(_, ty)| ty),
+        })
     }
 }
 

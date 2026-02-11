@@ -80,10 +80,12 @@ SimpleTerm: RawTerm<'input> = {
     "false" => RawTerm::Bool(false),
 }
 
-Assignee: Assignee<'input> = {
-    "{" <CommaSep<(Ident (":" <Assignee>)?)>> "}" => Assignee::Record(<>.into_boxed_slice()),
-    Tuple<Assignee> => Assignee::Tuple(<>),
-    Ident => Assignee::Ident(<>),
+Assignee: Assignee<'input> = WithInfo<RawAssignee>;
+
+RawAssignee: RawAssignee<'input> = {
+    "{" <CommaSep<(Ident (":" <Assignee>)?)>> "}" => RawAssignee::Record(<>.into_boxed_slice()),
+    Tuple<Assignee> => RawAssignee::Tuple(<>),
+    Ident => RawAssignee::Ident(<>),
 }
 
 TyBounds: TyBounds<'input> = {

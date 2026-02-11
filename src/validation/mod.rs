@@ -4,7 +4,7 @@ use itertools::Itertools;
 
 use crate::common::WithInfo;
 use crate::reprs::ast;
-use crate::reprs::common::{ArgStructure, Label};
+use crate::reprs::common::{ArgStructure, Label, RawArgStructure};
 use crate::reprs::untyped_ir as ir;
 
 use self::context::Context;
@@ -289,8 +289,10 @@ fn extract_idents<'a, 'i>(
         assignee: &'a ast::Assignee<'i>,
         idents: &mut Vec<&'a ast::Ident<'i>>,
     ) -> Result<'i, ArgStructure<'i>> {
+        let WithInfo(span, assignee) = assignee;
+
         let st = match assignee {
-            ast::Assignee::Record(fields) => ArgStructure::Record(
+            ast::RawAssignee::Record(fields) => RawArgStructure::Record(
                 check_unique_labels(fields)
                     .map_ok(|(ident, label, assignee)| {
                         Ok((
@@ -299,26 +301,26 @@ fn extract_idents<'a, 'i>(
                                 extract_idents_inner(assignee, idents)?
                             } else {
                                 idents.push(ident);
-                                ArgStructure::Var
+                                WithInfo(ident.0, RawArgStructure::Var)
                             },
                         ))
                     })
                     .map(Result::flatten)
                     .try_collect()?,
             ),
-            ast::Assignee::Tuple(elements) => ArgStructure::Tuple(
+            ast::RawAssignee::Tuple(elements) => RawArgStructure::Tuple(
                 elements
                     .iter()
                     .map(|assignee| extract_idents_inner(assignee, idents))
                     .try_collect()?,
             ),
-            ast::Assignee::Ident(ident) => {
+            ast::RawAssignee::Ident(ident) => {
                 idents.push(ident);
-                ArgStructure::Var
+                RawArgStructure::Var
             }
         };
 
-        Ok(st)
+        Ok(WithInfo(*span, st))
     }
     let mut idents = Vec::new();
     Ok((

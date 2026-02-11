@@ -2,7 +2,7 @@ use itertools::{Itertools, zip_eq};
 use typed_arena::Arena;
 
 use crate::common::WithInfo;
-use crate::reprs::common::ArgStructure;
+use crate::reprs::common::{ArgStructure, RawArgStructure};
 use crate::reprs::typed_ir::{self as tir};
 use crate::reprs::value::{self, Closure, Func, RawValue};
 
@@ -231,8 +231,9 @@ impl Value<'_, '_, '_> {
             output: &mut impl FnMut(Value<'i, 'ir, 'a>),
         ) -> Result<(), EvaluationError> {
             let WithInfo(info, val) = val;
+            let WithInfo(_arg_structure_span, arg_structure) = arg_structure;
             match arg_structure {
-                ArgStructure::Record(st_fields) => {
+                RawArgStructure::Record(st_fields) => {
                     let RawValue::Record(mut val_fields) = val else {
                         return Err(EvaluationError::Illegal(
                             "type checking failed: record destructure on non-record".to_string(),
@@ -250,7 +251,7 @@ impl Value<'_, '_, '_> {
                     })?;
                 }
 
-                ArgStructure::Tuple(st_elems) => {
+                RawArgStructure::Tuple(st_elems) => {
                     let RawValue::Tuple(val_elems) = val else {
                         return Err(EvaluationError::Illegal(
                             "type checking failed: tuple destructure on non-tuple".to_string(),
@@ -267,7 +268,7 @@ impl Value<'_, '_, '_> {
                     zip_eq(st_elems, val_elems).try_for_each(|(st, val)| inner(st, val, output))?;
                 }
 
-                ArgStructure::Var => output(WithInfo(info, val)),
+                RawArgStructure::Var => output(WithInfo(info, val)),
             }
             Ok(())
         }

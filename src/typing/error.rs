@@ -23,6 +23,8 @@ pub struct SpannedError<'i> {
     span: Range<usize>,
     span_label: Cow<'i, str>,
 
+    context_spans: Vec<(Range<usize>, Cow<'i, str>)>,
+
     text: Cow<'i, str>,
 }
 
@@ -97,6 +99,7 @@ impl<'i> SpannedError<'i> {
 
             span: span.range(),
             span_label: "".into(),
+            context_spans: Vec::new(),
 
             text: format!(
                 "expected: `{expected_ty}`\n\
@@ -118,6 +121,7 @@ impl<'i> SpannedError<'i> {
 
             span: span.range(),
             span_label: "".into(),
+            context_spans: Vec::new(),
 
             text: format!(
                 "expected: `{expected_ty}`\n\
@@ -134,7 +138,7 @@ impl<'i> SpannedError<'i> {
 
             span: span.range(),
             span_label: "".into(),
-
+            context_spans: Vec::new(),
             text: "".into(),
         }
     }
@@ -149,6 +153,30 @@ impl<'i> SpannedError<'i> {
             title: title.into(),
             span: span.range(),
             span_label: span_label.into(),
+            context_spans: Vec::new(),
+            text: text.into(),
+        }
+    }
+
+    pub fn with_context<C, L>(
+        title: impl Into<Cow<'i, str>>,
+        text: impl Into<Cow<'i, str>>,
+        span_label: impl Into<Cow<'i, str>>,
+        span: Span,
+        context_spans: C,
+    ) -> Self
+    where
+        C: IntoIterator<Item = (Span<'i>, L)>,
+        L: Into<Cow<'i, str>>,
+    {
+        Self {
+            title: title.into(),
+            span: span.range(),
+            span_label: span_label.into(),
+            context_spans: context_spans
+                .into_iter()
+                .map(|(span, l)| (span.range(), l.into()))
+                .collect(),
             text: text.into(),
         }
     }
@@ -237,6 +265,7 @@ impl<'i> TypeCheckError<'i> {
                     title,
                     span,
                     span_label,
+                    context_spans,
                     text,
                 },
                 context,
@@ -245,11 +274,17 @@ impl<'i> TypeCheckError<'i> {
                     Level::ERROR
                         .primary_title(title)
                         .element(
-                            snippet.annotation(
-                                AnnotationKind::Primary
-                                    .span(limit(span))
-                                    .label(if_nonempty(span_label)),
-                            ),
+                            snippet
+                                .annotation(
+                                    AnnotationKind::Primary
+                                        .span(limit(span))
+                                        .label(if_nonempty(span_label)),
+                                )
+                                .annotations(context_spans.into_iter().map(|(span, label)| {
+                                    AnnotationKind::Context
+                                        .span(limit(span))
+                                        .label(if_nonempty(label))
+                                })),
                         )
                         .elements(if_nonempty(text).map(|text| Level::ERROR.message(text)))
                         .elements(context.map(|cause| {

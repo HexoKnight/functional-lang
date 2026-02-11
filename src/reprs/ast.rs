@@ -38,8 +38,10 @@ pub enum RawTerm<'i> {
     Bool(bool),
 }
 
+pub type Assignee<'i> = WithInfo<Span<'i>, RawAssignee<'i>>;
+
 #[derive(Eq, PartialEq, Debug)]
-pub enum Assignee<'i> {
+pub enum RawAssignee<'i> {
     Record(Box<[(Ident<'i>, Option<Assignee<'i>>)]>),
     Tuple(Box<[Assignee<'i>]>),
     Ident(Ident<'i>),

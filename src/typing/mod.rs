@@ -3,7 +3,8 @@ use std::convert::Infallible;
 use itertools::{Itertools, zip_eq};
 
 use crate::{
-    reprs::common::{ArgStructure, Lvl},
+    common::WithInfo,
+    reprs::common::{ArgStructure, Lvl, RawArgStructure},
     typing::{
         context::{TyArenaContext, TyVarContext},
         error::SpannedError,
@@ -55,19 +56,20 @@ fn ty_eq<'a>(ty1: InternedType<'a>, ty2: InternedType<'a>) -> bool {
 }
 
 impl<'a> Type<'a> {
-    fn destructure(
+    fn destructure<'i>(
         &self,
-        arg_structure: &ArgStructure,
+        arg_structure: &ArgStructure<'i>,
         ctx: &(impl TyArenaContext<'a> + TyVarContext<'a>),
-    ) -> Result<impl Iterator<Item = &Self>, TypeCheckError<'static>> {
-        fn inner<'a, 's>(
-            arg_structure: &ArgStructure,
+    ) -> Result<impl Iterator<Item = &Self>, TypeCheckError<'i>> {
+        fn inner<'i, 'a, 's>(
+            arg_structure: &ArgStructure<'i>,
             ty: &'s Type<'a>,
             ctx: &(impl TyArenaContext<'a> + TyVarContext<'a>),
             output: &mut impl FnMut(&'s Type<'a>),
-        ) -> Result<(), TypeCheckError<'static>> {
+        ) -> Result<(), TypeCheckError<'i>> {
+            let WithInfo(span, arg_structure) = arg_structure;
             match arg_structure {
-                ArgStructure::Record(st_fields) => {
+                RawArgStructure::Record(st_fields) => {
                     let Type::Record(ty_fields) = ty else {
                         Err(SpannedError::new(
                             "type mismatch: record-destructure non-record",
@@ -75,9 +77,8 @@ impl<'a> Type<'a> {
                                 "cannot record-destructure value of type {ty}",
                                 ty = ty.display(ctx)?
                             ),
-                            // TODO: add span info to ArgStructure (or something like that)
-                            "somewhere in this file",
-                            crate::reprs::common::Span { text: "", start: 0 },
+                            "",
+                            *span,
                         ))?
                     };
 
@@ -89,17 +90,16 @@ impl<'a> Type<'a> {
                                 "type mismatch: record-destructure missing field",
                                 format!(
                                     "destructured record has field with label '{l}'\n\
-                                while it's missing from it's type"
+                                    while it's missing from it's type"
                                 ),
-                                // TODO
-                                "somewhere in this file",
-                                crate::reprs::common::Span { text: "", start: 0 },
+                                "",
+                                *span,
                             ))?
                         }
                     })?;
                 }
 
-                ArgStructure::Tuple(st_elems) => {
+                RawArgStructure::Tuple(st_elems) => {
                     let Type::Tuple(ty_elems) = ty else {
                         Err(SpannedError::new(
                             "type mismatch: tuple-destructure non-tuple",
@@ -107,9 +107,8 @@ impl<'a> Type<'a> {
                                 "cannot tuple-destructure value of type {ty}",
                                 ty = ty.display(ctx)?
                             ),
-                            // TODO
-                            "somewhere in this file",
-                            crate::reprs::common::Span { text: "", start: 0 },
+                            "",
+                            *span,
                         ))?
                     };
 
@@ -122,16 +121,15 @@ impl<'a> Type<'a> {
                                 "destructured tuple has {st_len} elements\n\
                                 while it's type has {ty_len} elements"
                             ),
-                            // TODO
-                            "somewhere in this file",
-                            crate::reprs::common::Span { text: "", start: 0 },
+                            "",
+                            *span,
                         ))?;
                     }
                     zip_eq(st_elems, ty_elems)
                         .try_for_each(|(st, ty)| inner(st, ty, ctx, output))?;
                 }
 
-                ArgStructure::Var => output(ty),
+                RawArgStructure::Var => output(ty),
             }
             Ok(())
         }
