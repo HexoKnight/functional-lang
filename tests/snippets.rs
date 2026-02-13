@@ -8,26 +8,31 @@ mod utils {
     use functional_lang::{
         evaluation::evaluate,
         parsing::{ParseError, Parser},
-        reprs::{ast::Term, typed_ir, untyped_ir, value::Value},
+        pipeline::Pipeline,
+        reprs::{ast::Term, common::FileInfo, typed_ir, untyped_ir, value::Value},
         typing::{TypeCheckError, type_check},
         validation::{ValidationError, validate},
     };
 
     use crate::common::render_error;
 
+    fn leak_file_info(text: &str) -> &FileInfo {
+        Box::leak(Box::new(FileInfo::new("<snippet>", text)))
+    }
+
     #[track_caller]
     fn parse_success(src: &str) -> Term<'_> {
-        match Parser::default().parse(src) {
+        match Pipeline::default().parse_single(leak_file_info(src)) {
             Ok(o) => o,
             Err(e) => {
-                panic!("{}", render_error(e, src, "<snippet>"))
+                panic!("{}", render_error(e))
             }
         }
     }
 
     #[track_caller]
     pub fn parse_failure(src: &'_ str) -> ParseError<'_> {
-        match Parser::default().parse(src) {
+        match Pipeline::default().parse_single(leak_file_info(src)) {
             Ok(o) => panic!("parse success:\n'{}'\n{:#?}", src, o),
             Err(e) => e,
         }
@@ -35,6 +40,12 @@ mod utils {
 
     #[track_caller]
     fn validate_success(src: &str) -> untyped_ir::Term<'_> {
+        Pipeline::default().validate_rec(
+            initial,
+            leak_file_info(src),
+            import_resolver,
+            import_reader,
+        );
         let ast = parse_success(src);
         match validate(&ast) {
             Ok(o) => o,
@@ -371,6 +382,9 @@ fn any() {
 
 #[test]
 fn ty_abs() {
+    // fail
+    evaluate_check_type(r"?T < _ > ! \x:T x", "");
+
     evaluate_check_type(r"?T \x:T x", "[T] T -> T");
     evaluate_check_type(
         r"?T<enum{a:()} \x:T x.match {a\():()()}",

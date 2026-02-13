@@ -1,0 +1,14 @@
+(?T \x enum some x ) .\some: [T] T -> enum { some: T  }
+(      enum none ()) .\none:          enum { none: () }
+
+{
+    some: some,
+    none: none,
+
+    map: ?T ?U \e: enum { some: T, none: () } \f: T -> U
+        e.match {
+            some \t:T some f,
+            none \():() none,
+        }
+    ,
+}

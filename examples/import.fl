@@ -1,0 +1,6 @@
+import ./lib.fl .\{ some, map, }: {
+    some: [T] T -> enum { some: T },
+    map: [T] [U] enum { some: T, none: () } -> (T -> U) -> enum { some: U, none: () },
+}
+
+(some(false)).map
