@@ -663,8 +663,12 @@ fn expect_type_rec<'a>(
     let relation = if subtype { "subtype" } else { "supertype" };
 
     match (expected, found, subtype) {
-        (Type::Bool, Type::Bool, _) | (_, Type::Any, false) | (_, Type::Never, true) => Ok(found),
-        (Type::Any, _, true) | (Type::Never, _, false) | (Type::Unknown, _, _) => {
+        (Type::Bool, Type::Bool, _)
+        | (_, Type::Any, false)
+        | (Type::Any, _, true)
+        | (_, Type::Never, true)
+        | (Type::Never, _, false) => Ok(found),
+        (Type::Unknown, _, _) => {
             // this _should_ be only place `found` would be unconstrained
             found.update_unconstrained_variances(subtype, ctx)?;
             Ok(found)
@@ -742,7 +746,11 @@ fn expect_type_rec<'a>(
                     let variance = result.get_variance_of(level);
                     constraint
                         .satisfy(variance, subtype, ctx)
-                        .map_err(ContextError::into_type_inference_err)
+                        .map_err(if ty_config.ty_infer_fail {
+                            ContextError::into_type_inference_err
+                        } else {
+                            std::convert::identity
+                        })
                         .wrap_error(|| {
                             PlainContextError::new(format!("failed to infer type argument: {name}"))
                         })
@@ -767,14 +775,14 @@ fn expect_type_rec<'a>(
                 // cyclic dependency issues (as earlier ty_vars cannot reference later ones)
                 handle_expected_ty_var(expected, found, *level_expected, subtype, ctx)
             } else {
-                handle_found_ty_var(expected, found, *level_found, subtype, ctx)
+                handle_found_ty_var(expected, found, *level_found, subtype, ty_config, ctx)
             }
         }
         (Type::TyVar(level_expected), found, _) => {
             handle_expected_ty_var(expected, found, *level_expected, subtype, ctx)
         }
         (expected, Type::TyVar(level_found), _) => {
-            handle_found_ty_var(expected, found, *level_found, subtype, ctx)
+            handle_found_ty_var(expected, found, *level_found, subtype, ty_config, ctx)
         }
         (
             Type::Arr {
@@ -926,6 +934,7 @@ fn handle_found_ty_var<'a>(
     found: InternedType<'a>,
     level_found: Lvl,
     subtype: bool,
+    ty_config: TyConfig,
     ctx: &Context<'a, '_>,
 ) -> Result<InternedType<'a>, ContextError<'static>> {
     let (name, var_found) = ctx.get_found_ty_var_unwrap(level_found)?;
@@ -958,7 +967,11 @@ fn handle_found_ty_var<'a>(
         TyVar::Inferred(ty_constraint) => {
             ty_constraint
                 .constrain(level_found, expected, subtype, ctx)
-                .map_err(ContextError::into_type_inference_err)
+                .map_err(if ty_config.ty_infer_fail {
+                    ContextError::into_type_inference_err
+                } else {
+                    std::convert::identity
+                })
                 .try_wrap_error(|| {
                     Ok(PlainContextError::new(format!(
                         "failed to infer type argument: {name}"

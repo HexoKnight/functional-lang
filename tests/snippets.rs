@@ -371,6 +371,8 @@ fn any() {
 
 #[test]
 fn ty_abs() {
+    evaluate_check_type(r"?T < _ > ! \x:T x", "[T <_ >!] T -> T");
+
     evaluate_check_type(r"?T \x:T x", "[T] T -> T");
     evaluate_check_type(
         r"?T<enum{a:()} \x:T x.match {a\():()()}",
@@ -514,7 +516,7 @@ fn type_arg_inference() {
 
     evaluate_check_type(r"\id:[A]A->A id true", "([A] A -> A) -> bool");
     evaluate_check_type(r"\x:bool \id:[A]A->A id x", "bool -> ([A] A -> A) -> bool");
-    type_check_failure(r"\x:! \id:[A]A->A id x");
+    evaluate_check_type(r"\x:! \id:[A]A->A id x", "! -> ([A] A -> A) -> !");
 
     evaluate_check_type(r"(?T \x:T x) true", "bool");
     evaluate_check_type(r"(?T \x:bool x) true", "bool");
@@ -584,11 +586,12 @@ fn type_arg_inference() {
     // inference is very local currently (app <-> match <-> id is 2 separations)
     type_check_failure(r"(?T \t t).\id:[T]T->T match {wrap id} (enum wrap true)");
 
-    evaluate_check_type(r"(?T ?R >T \t:T t.\r:R r) true", "bool");
+    evaluate_check_type(r" (?T ?R >T \t:T t.\r:R r) true", "_");
+    evaluate_check_type(r"((?T ?R >T \t:T t.\r:R r) true) .\x:bool x", "bool");
     // inference is not powerful enough currently
     // (requires knowing the inferred value of T during the inference of R)
     type_check_failure(r"(?T ?R >T \r:R r) true");
-    // causes illegal failure
+    // causes illegal failure (type variable level)
     type_check_failure(r"(?T ?R <T \r:R r) true");
 
     evaluate_check_type(
