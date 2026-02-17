@@ -85,7 +85,14 @@ mod utils {
     pub(super) fn type_check_failure(src: &'_ str) -> TypeCheckError<'_> {
         match type_check(src) {
             Ok(o) => panic!("type check success:\n'{}'\n{:#?}", src, o),
-            Err(CompilationError::TypeCheck(e)) => e,
+            Err(CompilationError::TypeCheck(error)) => {
+                if error.is_illegal() {
+                    panic!("{}", render_error(error))
+                } else {
+                    error
+                }
+            }
+
             Err(error) => panic!("{}", render_error(error)),
         }
     }
@@ -603,7 +610,6 @@ fn type_arg_inference() {
     // inference is not powerful enough currently
     // (requires knowing the inferred value of T during the inference of R)
     type_check_failure(r"(?T ?R >T \r:R r) true");
-    // causes illegal failure (type variable level)
     type_check_failure(r"(?T ?R <T \r:R r) true");
 
     evaluate_check_type(

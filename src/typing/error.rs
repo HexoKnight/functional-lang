@@ -187,12 +187,32 @@ impl PlainContextError {
 }
 
 impl ContextError<'_> {
-    pub(super) fn into_type_inference_err(self) -> Self {
+    /// whether the error is internal
+    /// (either indicates an internal bug or should not make it to the top level)
+    fn is_internal(&self) -> bool {
         match self {
-            ContextError::Illegal(_) | ContextError::PlainContext(_, Some(_)) => self,
-            ContextError::NonTerminalTypeInference | ContextError::PlainContext(_, None) => {
-                ContextError::NonTerminalTypeInference
-            }
+            ContextError::Illegal(_)
+            | ContextError::NonTerminalTypeInference
+            | ContextError::PlainContext(_, Some(_)) => true,
+            ContextError::PlainContext(_, None) => false,
+        }
+    }
+
+    pub(super) fn into_type_inference_err(self) -> Self {
+        if self.is_internal() {
+            self
+        } else {
+            ContextError::NonTerminalTypeInference
+        }
+    }
+}
+
+impl TypeCheckError<'_> {
+    pub fn is_illegal(&self) -> bool {
+        match self {
+            TypeCheckError::Illegal(_) | TypeCheckError::NonTerminalTypeInference => true,
+            TypeCheckError::Spanned(_, Some(ctx_err)) => ctx_err.is_internal(),
+            TypeCheckError::Spanned(_, _) => false,
         }
     }
 }
