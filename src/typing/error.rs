@@ -5,7 +5,7 @@ use std::{
 
 use annotate_snippets::{AnnotationKind, Group, Level, Origin};
 
-use crate::reprs::common::Span;
+use crate::{error::RenderError, reprs::common::Span};
 
 #[derive(Clone)]
 pub enum TypeCheckError<'i> {
@@ -197,7 +197,7 @@ impl ContextError<'_> {
     }
 }
 
-impl<'i> IllegalError<'i> {
+impl<'i> RenderError<'i> for IllegalError<'i> {
     fn push_groups(self, buf: &mut Vec<Group<'i>>) {
         let Self {
             msg,
@@ -223,15 +223,7 @@ impl<'i> IllegalError<'i> {
     }
 }
 
-impl<'i> TypeCheckError<'i> {
-    pub fn into_record(self) -> Vec<Group<'i>> {
-        let mut buf = Vec::new();
-        self.push_groups(&mut buf);
-        // we collect groups backwards so we reverse it here
-        buf.reverse();
-        buf
-    }
-
+impl<'i> RenderError<'i> for TypeCheckError<'i> {
     fn push_groups(self, buf: &mut Vec<Group<'i>>) {
         fn if_nonempty<S: Borrow<str>>(str: S) -> Option<S> {
             if str.borrow().is_empty() {

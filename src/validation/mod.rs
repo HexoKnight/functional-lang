@@ -107,7 +107,7 @@ mod error {
 
     use annotate_snippets::{AnnotationKind, Group, Level};
 
-    use crate::reprs::common::Span;
+    use crate::{error::RenderError, reprs::common::Span};
 
     pub enum ValidationError<'i> {
         VarNotFound {
@@ -131,8 +131,8 @@ mod error {
         },
     }
 
-    impl<'i> ValidationError<'i> {
-        pub fn into_record(self) -> Vec<Group<'i>> {
+    impl<'i> RenderError<'i> for ValidationError<'i> {
+        fn push_groups(self, buf: &mut Vec<Group<'i>>) {
             let group = match self {
                 ValidationError::VarNotFound { ty_var, name, span } => Level::ERROR
                     .primary_title(format!(
@@ -193,7 +193,7 @@ mod error {
                     )),
             };
 
-            vec![group]
+            buf.push(group);
         }
     }
 }

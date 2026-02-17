@@ -6,7 +6,7 @@ mod utils {
     use pretty_assertions::assert_eq;
 
     use functional_lang::{
-        error::CompilationError,
+        error::{CompilationError, RenderError},
         parsing::ParseError,
         pipeline::Pipeline,
         reprs::{
@@ -40,7 +40,7 @@ mod utils {
     }
 
     #[track_caller]
-    fn success<'i, T>(res: Result<T, impl Into<CompilationError<'i>>>) -> T {
+    fn success<'i, T>(res: Result<T, impl RenderError<'i>>) -> T {
         match res {
             Ok(t) => t,
             Err(error) => panic!("{}", render_error(error)),

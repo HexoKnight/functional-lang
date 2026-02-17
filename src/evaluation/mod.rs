@@ -111,19 +111,21 @@ mod context {
 mod error {
     use annotate_snippets::{Group, Level};
 
+    use crate::error::RenderError;
+
     pub enum EvaluationError {
         Illegal(String),
     }
 
-    impl EvaluationError {
-        pub fn into_record(self) -> Vec<Group<'static>> {
+    impl RenderError<'_> for EvaluationError {
+        fn push_groups(self, buf: &mut Vec<Group<'_>>) {
             let group = match self {
                 EvaluationError::Illegal(str) => Level::ERROR
                     .primary_title("illegal error (bug)")
                     .element(Level::ERROR.message(str)),
             };
 
-            vec![group]
+            buf.push(group);
         }
     }
 }

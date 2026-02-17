@@ -2,7 +2,10 @@ use annotate_snippets::{AnnotationKind, Group, Level};
 use itertools::Itertools;
 use lalrpop_util::lalrpop_mod;
 
-use crate::reprs::{ast::Term, common::FileInfo};
+use crate::{
+    error::RenderError,
+    reprs::{ast::Term, common::FileInfo},
+};
 
 lalrpop_mod!(
     #[allow(clippy::pedantic)]
@@ -39,8 +42,8 @@ impl Parser {
     }
 }
 
-impl<'i> ParseError<'i> {
-    pub fn into_record(self) -> Vec<Group<'i>> {
+impl<'i> RenderError<'i> for ParseError<'i> {
+    fn push_groups(self, buf: &mut Vec<Group<'i>>) {
         fn expected_str(expected: &[String]) -> String {
             match expected {
                 [] => "expected nothing?".into(),
@@ -84,6 +87,6 @@ impl<'i> ParseError<'i> {
                 .element(Level::NOTE.message("expected nothing")),
         };
 
-        vec![group]
+        buf.push(group);
     }
 }

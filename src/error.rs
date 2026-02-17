@@ -39,18 +39,33 @@ impl From<EvaluationError> for CompilationError<'_> {
     }
 }
 
-impl<'i> CompilationError<'i> {
-    pub fn into_record(self) -> Vec<Group<'i>> {
+impl<'i> RenderError<'i> for CompilationError<'i> {
+    fn push_groups(self, buf: &mut Vec<Group<'i>>) {
         match self {
-            Self::Parse(parse_error) => parse_error.into_record(),
-            Self::Validation(validation_error) => validation_error.into_record(),
-            Self::TypeCheck(type_check_error) => type_check_error.into_record(),
-            Self::Evaluation(evaluation_error) => evaluation_error.into_record(),
+            Self::Parse(err) => err.push_groups(buf),
+            Self::Validation(err) => err.push_groups(buf),
+            Self::TypeCheck(err) => err.push_groups(buf),
+            Self::Evaluation(err) => err.push_groups(buf),
         }
     }
+}
 
+impl CompilationError<'_> {
     pub fn render_styled(self) -> String {
         Renderer::styled().render(&self.into_record())
+    }
+}
+
+pub trait RenderError<'i>: Sized {
+    /// push groups in reverse order (for simplicity)
+    fn push_groups(self, buf: &mut Vec<Group<'i>>);
+
+    fn into_record(self) -> Vec<Group<'i>> {
+        let mut buf = Vec::new();
+        self.push_groups(&mut buf);
+        // we collect groups backwards so we reverse it here
+        buf.reverse();
+        buf
     }
 }
 
