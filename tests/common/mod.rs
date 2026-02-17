@@ -1,11 +1,7 @@
 use annotate_snippets::{Group, Level, Renderer};
 use functional_lang::error::CompilationError;
 
-pub fn render_error<'i>(
-    error: impl Into<CompilationError<'i>>,
-    source: &str,
-    origin: &str,
-) -> String {
+pub fn render_error<'i>(error: impl Into<CompilationError<'i>>) -> String {
     let error = error.into();
     let err_type = match &error {
         CompilationError::Parse(_) => "parse",
@@ -14,7 +10,7 @@ pub fn render_error<'i>(
         CompilationError::Evaluation(_) => "evaluation",
     };
 
-    let mut groups = error.into_record(source, origin);
+    let mut groups = error.into_record();
 
     groups.insert(
         0,

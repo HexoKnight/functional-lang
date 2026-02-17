@@ -28,6 +28,8 @@ pub enum RawTerm<'i> {
 
     Var(Ident<'i>),
 
+    Import(FilePath<'i>),
+
     Enum(Option<Type<'i>>, Ident<'i>),
     Match(Option<Type<'i>>, Box<[(Ident<'i>, Term<'i>)]>),
 
@@ -54,12 +56,22 @@ pub struct TyBounds<'i> {
 }
 
 #[derive(Debug)]
+pub struct FilePath<'i>(pub Span<'i>);
+
+impl Eq for FilePath<'_> {}
+impl PartialEq for FilePath<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.text() == other.0.text()
+    }
+}
+
+#[derive(Debug)]
 pub struct Ident<'i>(pub Span<'i>);
 
 impl Eq for Ident<'_> {}
 impl PartialEq for Ident<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.0.text == other.0.text
+        self.0.text() == other.0.text()
     }
 }
 

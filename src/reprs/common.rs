@@ -1,20 +1,70 @@
-use std::ops::Range;
+use std::{
+    borrow::Cow,
+    ops::{Index, Range},
+};
 
 use crate::{common::WithInfo, newtype_derive};
 
+/// `text` must be a subslice of `file_info.text` or weird stuff happens
 #[derive(Copy, Clone, Debug)]
 pub struct Span<'i> {
-    pub text: &'i str,
-    pub start: usize,
+    text: &'i str,
+
+    file_info: &'i FileInfo<'i>,
 }
 
-impl Span<'_> {
+impl<'i> Span<'i> {
+    pub fn new(file_info: &'i FileInfo<'i>, range: Range<usize>) -> Self {
+        Self {
+            text: file_info.text.index(range),
+            file_info,
+        }
+    }
+
+    pub fn text(self) -> &'i str {
+        self.text
+    }
+    pub fn file_info(self) -> &'i FileInfo<'i> {
+        self.file_info
+    }
+
+    pub fn start(self) -> usize {
+        self.text
+            .as_ptr()
+            .addr()
+            .checked_sub(self.file_info.text.as_ptr().addr())
+            .expect("`Span::text` not a subslice of `Span::file_info::text`")
+    }
     pub fn end(self) -> usize {
-        self.start + self.text.len()
+        self.start() + self.text.len()
     }
 
     pub fn range(self) -> Range<usize> {
-        self.start..self.end()
+        self.start()..self.end()
+    }
+}
+
+/// Represents a 'file' or more specifically a source string and an identifying name
+#[derive(Debug)]
+pub struct FileInfo<'i> {
+    name: Cow<'i, str>,
+    // this may need to be a slice
+    text: Cow<'i, str>,
+}
+
+impl<'i> FileInfo<'i> {
+    pub fn new(name: impl Into<Cow<'i, str>>, text: impl Into<Cow<'i, str>>) -> Self {
+        Self {
+            name: name.into(),
+            text: text.into(),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn text(&self) -> &str {
+        &self.text
     }
 }
 
@@ -31,6 +81,18 @@ pub enum RawArgStructure<'i> {
 pub struct Label<'i>(pub &'i str);
 
 newtype_derive!([Label<'i>(&'i str)] Debug, Display);
+
+#[derive(Hash, Copy, Clone, Eq, PartialEq, Debug)]
+pub struct ImportId(pub usize);
+
+pub trait ImportResolver {
+    // type ImportId;
+    fn resolve(&mut self, current: ImportId, path: &str) -> Result<ImportId, String>;
+}
+
+pub trait Importer<'i>: ImportResolver {
+    fn read(&self, import_id: ImportId) -> Result<&'i FileInfo<'i>, String>;
+}
 
 /// de Bruijn index
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]

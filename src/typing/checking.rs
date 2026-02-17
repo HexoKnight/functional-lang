@@ -6,6 +6,7 @@ use typed_arena::Arena;
 use crate::{
     common::{WithInfo, maybe_zip_eq},
     reprs::{
+        common::ImportId,
         typed_ir::{self as tir},
         untyped_ir as uir,
     },
@@ -23,8 +24,10 @@ use crate::{
 use self::context::Context;
 
 mod context {
+    use std::collections::HashMap;
+
     use crate::{
-        reprs::common::{Idx, Lvl},
+        reprs::common::{Idx, ImportId, Lvl},
         typing::{
             InternedType,
             context::{ContextInner, Stack, TyArenaContext, TyVarContext},
@@ -36,14 +39,19 @@ mod context {
     #[derive(Clone)]
     pub(super) struct Context<'a, 'inn> {
         inner: &'inn ContextInner<'a>,
+        import_tys: &'inn HashMap<ImportId, InternedType<'a>>,
         var_ty_stack: Stack<(InternedType<'a>, Lvl)>,
         ty_var_stack: Stack<(&'a str, TyBounds<'a>)>,
     }
 
     impl<'a, 'inn> Context<'a, 'inn> {
-        pub(super) fn with_inner(inner: &'inn ContextInner<'a>) -> Self {
+        pub(super) fn new(
+            inner: &'inn ContextInner<'a>,
+            import_tys: &'inn HashMap<ImportId, InternedType<'a>>,
+        ) -> Self {
             Self {
                 inner,
+                import_tys,
                 var_ty_stack: Vec::new(),
                 ty_var_stack: Vec::new(),
             }
@@ -62,7 +70,7 @@ mod context {
             new
         }
 
-        pub(super) fn get_var_ty(&self, index: Idx) -> Option<&'a Type<'a>> {
+        pub(super) fn get_var_ty(&self, index: Idx) -> Option<InternedType<'a>> {
             let (var_ty, ty_var_level) = *index.get(&self.var_ty_stack)?;
             let current_ty_var_level = self.next_ty_var_level();
             if ty_var_level == current_ty_var_level {
@@ -84,6 +92,10 @@ mod context {
                 },
                 self,
             ))
+        }
+
+        pub(super) fn get_import_ty(&self, import_id: ImportId) -> Option<InternedType<'a>> {
+            self.import_tys.get(&import_id).copied()
         }
     }
 
@@ -118,28 +130,42 @@ mod context {
     }
 }
 
-/// Takes an [`untyped_ir::Term`][uir::Term] and checks that it can be typed, returning a
-/// [`typed_ir::Term`][tir::Term], which is entirely type erased, along with a string
-/// representing the type of the term.
+/// Takes a series of [`ImportId`]s and [`untyped_ir::Term`][uir::Term]s and checks that they can be
+/// typed, returning a series of [`typed_ir::Term`][tir::Term], which are entirely type erased,
+/// along with strings representing the type of each term.
+///
+/// The terms are checked in order, so they must be toposorted without cycles.
 ///
 /// # Errors
 /// When type checking fails.
-pub fn type_check<'i>(
-    untyped_ir: &uir::Term<'i>,
-) -> Result<(tir::Term<'i>, String), TypeCheckError<'i>> {
+pub fn type_check<'i: 't, 't>(
+    untyped_irs: impl IntoIterator<Item = (ImportId, &'t uir::Term<'i>)>,
+) -> Result<Vec<(ImportId, tir::Term<'i>, String)>, TypeCheckError<'i>> {
     let arena = Arena::new();
     let inner = ContextInner::new(&arena);
-    let ctx = Context::with_inner(&inner);
 
-    let (term, ty) = untyped_ir.type_check(
-        None,
-        TyConfig {
-            infer_ty_args: false,
-            ty_infer_fail: false,
-        },
-        &ctx,
-    )?;
-    Ok((term, ty.display(&ctx)?))
+    let mut import_tys = HashMap::new();
+
+    untyped_irs
+        .into_iter()
+        .map(|(import_id, untyped_ir)| {
+            let ctx = Context::new(&inner, &import_tys);
+
+            let (term, ty) = untyped_ir.type_check(
+                None,
+                TyConfig {
+                    infer_ty_args: false,
+                    ty_infer_fail: false,
+                },
+                &ctx,
+            )?;
+            let ty_display = ty.display(&ctx)?;
+
+            import_tys.insert(import_id, ty);
+
+            Ok((import_id, term, ty_display))
+        })
+        .collect()
 }
 
 trait TypeCheck<'i, 'a, 'inn> {
@@ -580,6 +606,11 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
 
                 (tir::RawTerm::Var(*index), ty)
             }
+            uir::RawTerm::Import(WithInfo(span, import_id)) => (
+                tir::RawTerm::Import(*import_id),
+                ctx.get_import_ty(*import_id)
+                    .ok_or_else(|| IllegalError::new("", Some(*span)))?,
+            ),
             uir::RawTerm::Enum(arg, label) => {
                 let arg = arg.eval(ctx)?;
 

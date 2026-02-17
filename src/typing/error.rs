@@ -1,10 +1,9 @@
 use std::{
     borrow::{Borrow, Cow},
-    ops::Range,
     panic::Location,
 };
 
-use annotate_snippets::{AnnotationKind, Group, Level, Origin, Snippet};
+use annotate_snippets::{AnnotationKind, Group, Level, Origin};
 
 use crate::reprs::common::Span;
 
@@ -20,10 +19,10 @@ pub enum TypeCheckError<'i> {
 pub struct SpannedError<'i> {
     title: Cow<'i, str>,
 
-    span: Range<usize>,
+    span: Span<'i>,
     span_label: Cow<'i, str>,
 
-    context_spans: Vec<(Range<usize>, Cow<'i, str>)>,
+    context_spans: Vec<(Span<'i>, Cow<'i, str>)>,
 
     text: Cow<'i, str>,
 }
@@ -31,7 +30,7 @@ pub struct SpannedError<'i> {
 #[derive(Clone)]
 pub struct IllegalError<'i> {
     msg: Cow<'i, str>,
-    span: Option<Range<usize>>,
+    span: Option<Span<'i>>,
 
     location: &'static Location<'static>,
 
@@ -75,10 +74,10 @@ impl From<PlainContextError> for ContextError<'_> {
 
 impl<'i> IllegalError<'i> {
     #[track_caller]
-    pub fn new(msg: impl Into<Cow<'i, str>>, span: Option<Span>) -> Self {
+    pub fn new(msg: impl Into<Cow<'i, str>>, span: Option<Span<'i>>) -> Self {
         Self {
             msg: msg.into(),
-            span: span.map(Span::range),
+            span,
             location: Location::caller(),
 
             context: None,
@@ -90,14 +89,14 @@ impl<'i> SpannedError<'i> {
     pub fn ty_ty_mismatch(
         expected_ty: impl Into<Cow<'i, str>>,
         found_ty: impl Into<Cow<'i, str>>,
-        span: Span,
+        span: Span<'i>,
     ) -> Self {
         let expected_ty = expected_ty.into();
         let found_ty = found_ty.into();
         Self {
             title: format!("type mismatch: expected `{expected_ty}`").into(),
 
-            span: span.range(),
+            span,
             span_label: "".into(),
             context_spans: Vec::new(),
 
@@ -112,14 +111,14 @@ impl<'i> SpannedError<'i> {
     pub fn ty_mismatch(
         expected_ty: impl Into<Cow<'i, str>>,
         text: impl Into<Cow<'i, str>>,
-        span: Span,
+        span: Span<'i>,
     ) -> Self {
         let expected_ty = expected_ty.into();
         let text = text.into();
         Self {
             title: format!("type mismatch: expected `{expected_ty}`").into(),
 
-            span: span.range(),
+            span,
             span_label: "".into(),
             context_spans: Vec::new(),
 
@@ -131,12 +130,11 @@ impl<'i> SpannedError<'i> {
         }
     }
 
-    pub fn type_inference(msg: impl Into<Cow<'i, str>>, span: Span) -> Self {
+    pub fn type_inference(msg: impl Into<Cow<'i, str>>, span: Span<'i>) -> Self {
         let msg = msg.into();
         Self {
             title: format!("type inference error: {msg}").into(),
-
-            span: span.range(),
+            span,
             span_label: "".into(),
             context_spans: Vec::new(),
             text: "".into(),
@@ -147,11 +145,11 @@ impl<'i> SpannedError<'i> {
         title: impl Into<Cow<'i, str>>,
         text: impl Into<Cow<'i, str>>,
         span_label: impl Into<Cow<'i, str>>,
-        span: Span,
+        span: Span<'i>,
     ) -> Self {
         Self {
             title: title.into(),
-            span: span.range(),
+            span,
             span_label: span_label.into(),
             context_spans: Vec::new(),
             text: text.into(),
@@ -162,7 +160,7 @@ impl<'i> SpannedError<'i> {
         title: impl Into<Cow<'i, str>>,
         text: impl Into<Cow<'i, str>>,
         span_label: impl Into<Cow<'i, str>>,
-        span: Span,
+        span: Span<'i>,
         context_spans: C,
     ) -> Self
     where
@@ -171,11 +169,11 @@ impl<'i> SpannedError<'i> {
     {
         Self {
             title: title.into(),
-            span: span.range(),
+            span,
             span_label: span_label.into(),
             context_spans: context_spans
                 .into_iter()
-                .map(|(span, l)| (span.range(), l.into()))
+                .map(|(span, l)| (span, l.into()))
                 .collect(),
             text: text.into(),
         }
@@ -200,7 +198,7 @@ impl ContextError<'_> {
 }
 
 impl<'i> IllegalError<'i> {
-    fn push_groups(self, source: &'i str, origin: &'i str, buf: &mut Vec<Group<'i>>) {
+    fn push_groups(self, buf: &mut Vec<Group<'i>>) {
         let Self {
             msg,
             span,
@@ -216,29 +214,25 @@ impl<'i> IllegalError<'i> {
                     .char_column(location.column().try_into().expect("not 16-bit arch")),
             )
             .elements(span.map(|span| {
-                Snippet::source(source)
-                    .path(origin)
-                    .annotation(AnnotationKind::Primary.span(span))
+                span.snippet()
+                    .annotation(span.annotation(AnnotationKind::Primary))
             }))
             .element(Level::ERROR.message(msg))
-            .elements(
-                context
-                    .map(|context| Level::INFO.message(context.into_context(source, origin, buf))),
-            );
+            .elements(context.map(|context| Level::INFO.message(context.into_context(buf))));
         buf.push(group);
     }
 }
 
 impl<'i> TypeCheckError<'i> {
-    pub fn into_record(self, source: &'i str, origin: &'i str) -> Vec<Group<'i>> {
+    pub fn into_record(self) -> Vec<Group<'i>> {
         let mut buf = Vec::new();
-        self.push_groups(source, origin, &mut buf);
+        self.push_groups(&mut buf);
         // we collect groups backwards so we reverse it here
         buf.reverse();
         buf
     }
 
-    fn push_groups(self, source: &'i str, origin: &'i str, buf: &mut Vec<Group<'i>>) {
+    fn push_groups(self, buf: &mut Vec<Group<'i>>) {
         fn if_nonempty<S: Borrow<str>>(str: S) -> Option<S> {
             if str.borrow().is_empty() {
                 None
@@ -247,17 +241,11 @@ impl<'i> TypeCheckError<'i> {
             }
         }
 
-        let limit = |span: Range<usize>| {
-            if source.is_empty() { 0..0 } else { span }
-        };
-
-        let snippet = Snippet::source(source).path(origin);
         match self {
-            Self::Illegal(err) => err.push_groups(source, origin, buf),
+            Self::Illegal(err) => err.push_groups(buf),
             Self::NonTerminalTypeInference => {
-                println!("asdasd");
                 IllegalError::new("non terminal type inference error escaped", None)
-                    .push_groups(source, origin, buf)
+                    .push_groups(buf);
             }
 
             Self::Spanned(
@@ -270,26 +258,22 @@ impl<'i> TypeCheckError<'i> {
                 },
                 context,
             ) => {
-                let group =
-                    Level::ERROR
-                        .primary_title(title)
-                        .element(
-                            snippet
-                                .annotation(
-                                    AnnotationKind::Primary
-                                        .span(limit(span))
-                                        .label(if_nonempty(span_label)),
-                                )
-                                .annotations(context_spans.into_iter().map(|(span, label)| {
-                                    AnnotationKind::Context
-                                        .span(limit(span))
-                                        .label(if_nonempty(label))
-                                })),
+                let group = Level::ERROR
+                    .primary_title(title)
+                    .element(
+                        span.snippet().annotation(
+                            span.annotation(AnnotationKind::Primary)
+                                .label(if_nonempty(span_label)),
+                        ),
+                    )
+                    .elements(context_spans.into_iter().map(|(span, label)| {
+                        span.snippet().annotation(
+                            span.annotation(AnnotationKind::Context)
+                                .label(if_nonempty(label)),
                         )
-                        .elements(if_nonempty(text).map(|text| Level::ERROR.message(text)))
-                        .elements(context.map(|cause| {
-                            Level::INFO.message(cause.into_context(source, origin, buf))
-                        }));
+                    }))
+                    .elements(if_nonempty(text).map(|text| Level::ERROR.message(text)))
+                    .elements(context.map(|cause| Level::INFO.message(cause.into_context(buf))));
                 buf.push(group);
             }
         }
@@ -297,19 +281,16 @@ impl<'i> TypeCheckError<'i> {
 }
 
 impl<'i> ContextError<'i> {
-    fn into_context(self, source: &'i str, origin: &'i str, buf: &mut Vec<Group<'i>>) -> String {
+    fn into_context(self, buf: &mut Vec<Group<'i>>) -> String {
         let (context, cause) = match self {
             Self::Illegal(err) => (None, Some(err)),
-            Self::NonTerminalTypeInference => {
-                println!("asdasd");
-                (
+            Self::NonTerminalTypeInference => (
+                None,
+                Some(IllegalError::new(
+                    "non terminal type inference error escaped",
                     None,
-                    Some(IllegalError::new(
-                        "non terminal type inference error escaped",
-                        None,
-                    )),
-                )
-            }
+                )),
+            ),
             Self::PlainContext(context, cause) => (Some(context), cause.map(|b| *b)),
         };
 
@@ -321,7 +302,7 @@ impl<'i> ContextError<'i> {
             context_buf.push_str("\nencountered illegal error: ");
             context_buf.push_str(&cause.msg);
 
-            cause.push_groups(source, origin, buf);
+            cause.push_groups(buf);
         }
         context_buf
     }

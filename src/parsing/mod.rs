@@ -1,10 +1,8 @@
-use std::borrow::Cow;
-
-use annotate_snippets::{AnnotationKind, Group, Level, Snippet};
+use annotate_snippets::{AnnotationKind, Group, Level};
 use itertools::Itertools;
 use lalrpop_util::lalrpop_mod;
 
-use crate::reprs::ast::Term;
+use crate::reprs::{ast::Term, common::FileInfo};
 
 lalrpop_mod!(
     #[allow(clippy::pedantic)]
@@ -15,6 +13,7 @@ lalrpop_mod!(
 type UserParserError = std::convert::Infallible;
 
 pub struct ParseError<'i>(
+    &'i FileInfo<'i>,
     lalrpop_util::ParseError<usize, lalrpop_util::lexer::Token<'i>, UserParserError>,
 );
 
@@ -33,13 +32,15 @@ impl Parser {
     ///
     /// # Errors
     /// When parsing fails.
-    pub fn parse<'i>(&self, input: &'i str) -> Result<Term<'i>, ParseError<'i>> {
-        self.term_parser.parse(input).map_err(ParseError)
+    pub fn parse<'i>(&self, file_info: &'i FileInfo<'i>) -> Result<Term<'i>, ParseError<'i>> {
+        self.term_parser
+            .parse(file_info, file_info.text())
+            .map_err(|err| ParseError(file_info, err))
     }
 }
 
 impl<'i> ParseError<'i> {
-    pub fn into_record(self, source: &'i str, origin: impl Into<Cow<'i, str>>) -> Vec<Group<'i>> {
+    pub fn into_record(self) -> Vec<Group<'i>> {
         fn expected_str(expected: &[String]) -> String {
             match expected {
                 [] => "expected nothing?".into(),
@@ -54,8 +55,10 @@ impl<'i> ParseError<'i> {
             }
         }
 
-        let snippet = Snippet::source(source).path(origin.into());
-        let group = match self.0 {
+        let ParseError(file_info, parse_error) = self;
+
+        let snippet = file_info.snippet();
+        let group = match parse_error {
             lalrpop_util::ParseError::InvalidToken { location } => Level::ERROR
                 .primary_title("Found invalid token")
                 .element(snippet.annotation(AnnotationKind::Primary.span(location..location))),

@@ -1,19 +1,28 @@
+use std::{borrow::Borrow, collections::HashMap};
+
 use itertools::{Itertools, zip_eq};
 use typed_arena::Arena;
 
-use crate::common::WithInfo;
-use crate::reprs::common::{ArgStructure, RawArgStructure};
-use crate::reprs::typed_ir::{self as tir};
-use crate::reprs::value::{self, Closure, Func, RawValue};
+use crate::{
+    common::WithInfo,
+    evaluation::context::ContextInner,
+    reprs::{
+        common::{ArgStructure, ImportId, RawArgStructure},
+        typed_ir::{RawTerm, Term},
+        value::{self, Closure, Func, RawValue},
+    },
+};
 
 use self::context::Context;
 pub use self::context::ContextClosure;
 pub use self::error::EvaluationError;
 
 mod context {
+    use std::collections::HashMap;
+
     use typed_arena::Arena;
 
-    use crate::reprs::common::Idx;
+    use crate::reprs::common::{Idx, ImportId};
 
     use super::Value;
 
@@ -31,17 +40,37 @@ mod context {
         var_stack: Stack<&'a Value<'i, 'ir, 'a>>,
     }
 
+    pub(super) struct ContextInner<'i, 'ir, 'a> {
+        var_arena: &'a Arena<Value<'i, 'ir, 'a>>,
+    }
+
+    impl<'i, 'ir, 'a> ContextInner<'i, 'ir, 'a> {
+        pub(super) fn new(arena: &'a Arena<Value<'i, 'ir, 'a>>) -> Self {
+            Self { var_arena: arena }
+        }
+
+        pub(super) fn alloc(&self, value: Value<'i, 'ir, 'a>) -> &'a Value<'i, 'ir, 'a> {
+            self.var_arena.alloc(value)
+        }
+    }
+
     #[must_use]
     #[derive(Clone)]
-    pub(super) struct Context<'i, 'ir, 'a> {
-        var_arena: &'a Arena<Value<'i, 'ir, 'a>>,
+    pub(super) struct Context<'i, 'ir, 'a, 'inn> {
+        inner: &'inn ContextInner<'i, 'ir, 'a>,
+        imports: &'inn HashMap<ImportId, &'a Value<'i, 'ir, 'a>>,
+
         var_stack: Stack<&'a Value<'i, 'ir, 'a>>,
     }
 
-    impl<'i, 'ir, 'a> Context<'i, 'ir, 'a> {
-        pub(super) fn with_arena(arena: &'a Arena<Value<'i, 'ir, 'a>>) -> Self {
+    impl<'i, 'ir, 'a, 'inn> Context<'i, 'ir, 'a, 'inn> {
+        pub(super) fn new(
+            imports: &'inn HashMap<ImportId, &'a Value<'i, 'ir, 'a>>,
+            inner: &'inn ContextInner<'i, 'ir, 'a>,
+        ) -> Self {
             Self {
-                var_arena: arena,
+                inner,
+                imports,
                 var_stack: Vec::new(),
             }
         }
@@ -49,12 +78,16 @@ mod context {
         pub(super) fn push_vars(&self, vars: impl IntoIterator<Item = Value<'i, 'ir, 'a>>) -> Self {
             let mut new = self.clone();
             new.var_stack
-                .extend(vars.into_iter().map(|v| &*self.var_arena.alloc(v)));
+                .extend(vars.into_iter().map(|v| self.inner.alloc(v)));
             new
         }
 
         pub(super) fn get_var(&self, index: Idx) -> Option<&'a Value<'i, 'ir, 'a>> {
             index.get(&self.var_stack).copied()
+        }
+
+        pub(super) fn get_import(&self, import_id: ImportId) -> Option<&'a Value<'i, 'ir, 'a>> {
+            self.imports.get(&import_id).copied()
         }
 
         // TODO: perhaps try to close only over referenced vars
@@ -67,7 +100,8 @@ mod context {
         pub(super) fn apply_closure(&self, closure: ContextClosure<'i, 'ir, 'a>) -> Self {
             let ContextClosure { var_stack } = closure;
             Self {
-                var_arena: self.var_arena,
+                inner: self.inner,
+                imports: self.imports,
                 var_stack,
             }
         }
@@ -96,32 +130,55 @@ mod error {
 
 type Value<'i, 'ir, 'a> = value::Value<'i, Closure<'i, 'ir, 'a>>;
 
-trait Evaluate<'i, 'ir, 'a> {
-    type Evaluated;
-
-    fn evaluate(&'ir self, ctx: &Context<'i, 'ir, 'a>) -> Result<Self::Evaluated, EvaluationError>;
-}
-
-/// Takes a [`typed_ir::Term`][tir::Term] and evaluates it, returning the resulting
-/// [`Value`][value::Value].
+/// Takes a [`typed_ir::Term`][tir::Term] and all it's dependencies and evaluates it,
+/// returning the resulting [`Value`][value::Value].
 ///
 /// # Errors
 /// When evaluation fails.
-pub fn evaluate<'i>(typed_ir: &tir::Term<'i>) -> Result<value::Value<'i, ()>, EvaluationError> {
+pub fn evaluate<'i: 't, 't, I>(
+    typed_ir: impl Borrow<Term<'i>>,
+    imports: I,
+) -> Result<value::Value<'i, ()>, EvaluationError>
+where
+    I: IntoIterator<Item = (ImportId, &'t Term<'i>)>,
+{
+    let typed_ir = typed_ir.borrow();
+
     let arena = Arena::new();
-    let value = typed_ir.evaluate(&Context::with_arena(&arena))?;
+    let inner = ContextInner::new(&arena);
+
+    let imports =
+        imports
+            .into_iter()
+            .try_fold(HashMap::new(), |mut imports, (import_id, term)| {
+                let value = term.evaluate(&Context::new(&imports, &inner))?;
+                imports.insert(import_id, inner.alloc(value));
+                Ok(imports)
+            })?;
+    let value = typed_ir.evaluate(&Context::new(&imports, &inner))?;
     Ok(value.map_closure(|_| ()))
 }
 
-impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
+trait Evaluate<'i, 'ir, 'a> {
+    type Evaluated;
+    fn evaluate(
+        &'ir self,
+        ctx: &Context<'i, 'ir, 'a, '_>,
+    ) -> Result<Self::Evaluated, EvaluationError>;
+}
+
+impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for Term<'i> {
     type Evaluated = Value<'i, 'ir, 'a>;
 
-    fn evaluate(&'ir self, ctx: &Context<'i, 'ir, 'a>) -> Result<Self::Evaluated, EvaluationError> {
+    fn evaluate(
+        &'ir self,
+        ctx: &Context<'i, 'ir, 'a, '_>,
+    ) -> Result<Self::Evaluated, EvaluationError> {
         let WithInfo(info, term) = self;
 
         let value = match term {
             // we cannot evaluate a solitary abstraction any further so we treat it like a closure
-            tir::RawTerm::Abs {
+            RawTerm::Abs {
                 arg_structure,
                 body,
             } => RawValue::Func(Func::Abs(
@@ -131,7 +188,7 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
                     body: body.as_ref(),
                 },
             )),
-            tir::RawTerm::App { func, arg } => {
+            RawTerm::App { func, arg } => {
                 let RawValue::Func(func) = func.evaluate(ctx)?.1 else {
                     return Err(EvaluationError::Illegal(
                         "type checking failed: application on non-function".to_string(),
@@ -141,7 +198,7 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
                 let arg = arg.evaluate(ctx)?;
                 func.evaluate_arg(arg, ctx)?
             }
-            tir::RawTerm::Var(index) => ctx
+            RawTerm::Var(index) => ctx
                 .get_var(*index)
                 .ok_or_else(|| {
                     EvaluationError::Illegal(format!("variable index not found: {index:?}\n"))
@@ -149,8 +206,16 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
                 .1
                 // TODO: maybe try eliminate this clone??
                 .clone(),
-            tir::RawTerm::Enum(label) => RawValue::Func(Func::EnumCons(*label)),
-            tir::RawTerm::Match(arms) => RawValue::Func(Func::Match(
+            RawTerm::Import(import_id) => ctx
+                .get_import(*import_id)
+                .ok_or_else(|| {
+                    EvaluationError::Illegal(format!("import id not found: {import_id:?}"))
+                })?
+                .1
+                // TODO: maybe try eliminate this clone??
+                .clone(),
+            RawTerm::Enum(label) => RawValue::Func(Func::EnumCons(*label)),
+            RawTerm::Match(arms) => RawValue::Func(Func::Match(
                 arms.iter()
                     .map(|(l, body)| {
                         (
@@ -163,16 +228,16 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for tir::Term<'i> {
                     })
                     .collect(),
             )),
-            tir::RawTerm::Record(fields) => RawValue::Record(
+            RawTerm::Record(fields) => RawValue::Record(
                 fields
                     .iter()
                     .map(|(l, f)| f.evaluate(ctx).map(|f| (*l, f)))
                     .try_collect()?,
             ),
-            tir::RawTerm::Tuple(elems) => {
+            RawTerm::Tuple(elems) => {
                 RawValue::Tuple(elems.iter().map(|e| e.evaluate(ctx)).try_collect()?)
             }
-            tir::RawTerm::Bool(b) => RawValue::Bool(*b),
+            RawTerm::Bool(b) => RawValue::Bool(*b),
         };
 
         Ok(WithInfo(*info, value))
@@ -183,7 +248,7 @@ impl<'i: 'ir, 'ir: 'a, 'a> Func<'i, Closure<'i, 'ir, 'a>> {
     fn evaluate_arg(
         self,
         arg: Value<'i, 'ir, 'a>,
-        ctx: &Context<'i, 'ir, 'a>,
+        ctx: &Context<'i, 'ir, 'a, '_>,
     ) -> Result<RawValue<'i, Closure<'i, 'ir, 'a>>, EvaluationError> {
         let value = match self {
             Func::Abs(arg_structure, value::Closure { closed_ctx, body }) => {

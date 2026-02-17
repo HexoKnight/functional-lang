@@ -1,7 +1,10 @@
-use annotate_snippets::{Group, Renderer};
+use annotate_snippets::{Annotation, AnnotationKind, Group, Renderer, Snippet};
 
 use crate::{
-    evaluation::EvaluationError, parsing::ParseError, typing::TypeCheckError,
+    evaluation::EvaluationError,
+    parsing::ParseError,
+    reprs::common::{FileInfo, Span},
+    typing::TypeCheckError,
     validation::ValidationError,
 };
 
@@ -37,16 +40,32 @@ impl From<EvaluationError> for CompilationError<'_> {
 }
 
 impl<'i> CompilationError<'i> {
-    pub fn into_record(self, source: &'i str, origin: &'i str) -> Vec<Group<'i>> {
+    pub fn into_record(self) -> Vec<Group<'i>> {
         match self {
-            Self::Parse(parse_error) => parse_error.into_record(source, origin),
-            Self::Validation(validation_error) => validation_error.into_record(source, origin),
-            Self::TypeCheck(type_check_error) => type_check_error.into_record(source, origin),
+            Self::Parse(parse_error) => parse_error.into_record(),
+            Self::Validation(validation_error) => validation_error.into_record(),
+            Self::TypeCheck(type_check_error) => type_check_error.into_record(),
             Self::Evaluation(evaluation_error) => evaluation_error.into_record(),
         }
     }
 
-    pub fn render_styled(self, source: &'i str, origin: &'i str) -> String {
-        Renderer::styled().render(&self.into_record(source, origin))
+    pub fn render_styled(self) -> String {
+        Renderer::styled().render(&self.into_record())
+    }
+}
+
+impl<'i> FileInfo<'i> {
+    pub(super) fn snippet<T: Clone>(&'i self) -> Snippet<'i, T> {
+        Snippet::source(self.text()).path(self.name())
+    }
+}
+
+impl<'i> Span<'i> {
+    pub(super) fn annotation(self, kind: AnnotationKind) -> Annotation<'i> {
+        kind.span(self.range())
+    }
+
+    pub(super) fn snippet<T: Clone>(self) -> Snippet<'i, T> {
+        self.file_info().snippet()
     }
 }

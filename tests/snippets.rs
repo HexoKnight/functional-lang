@@ -6,79 +6,91 @@ mod utils {
     use pretty_assertions::assert_eq;
 
     use functional_lang::{
-        evaluation::evaluate,
-        parsing::{ParseError, Parser},
-        reprs::{ast::Term, typed_ir, untyped_ir, value::Value},
-        typing::{TypeCheckError, type_check},
-        validation::{ValidationError, validate},
+        error::CompilationError,
+        parsing::ParseError,
+        pipeline::Pipeline,
+        reprs::{
+            ast::Term,
+            common::{FileInfo, ImportId, ImportResolver, Importer},
+            typed_ir, untyped_ir,
+            value::Value,
+        },
+        typing::TypeCheckError,
+        validation::ValidationError,
     };
 
     use crate::common::render_error;
 
-    #[track_caller]
-    fn parse_success(src: &str) -> Term<'_> {
-        match Parser::default().parse(src) {
-            Ok(o) => o,
-            Err(e) => {
-                panic!("{}", render_error(e, src, "<snippet>"))
-            }
+    fn leak_file_info(text: &'_ str) -> &'_ FileInfo<'_> {
+        Box::leak(Box::new(FileInfo::new("<snippet>", text)))
+    }
+
+    struct DummyImporter;
+
+    impl ImportResolver for DummyImporter {
+        fn resolve(&mut self, _current: ImportId, _path: &str) -> Result<ImportId, String> {
+            Err("importing unavailable in current environment".to_string())
+        }
+    }
+
+    impl<'i> Importer<'i> for DummyImporter {
+        fn read(&self, _import_id: ImportId) -> Result<&'i FileInfo<'i>, String> {
+            Err("importing unavailable in current environment".to_string())
         }
     }
 
     #[track_caller]
-    pub fn parse_failure(src: &'_ str) -> ParseError<'_> {
-        match Parser::default().parse(src) {
+    fn success<'i, T>(res: Result<T, impl Into<CompilationError<'i>>>) -> T {
+        match res {
+            Ok(t) => t,
+            Err(error) => panic!("{}", render_error(error)),
+        }
+    }
+
+    fn parse(src: &'_ str) -> Result<Term<'_>, ParseError<'_>> {
+        Pipeline::default().parse_single(leak_file_info(src))
+    }
+    fn validate(src: &'_ str) -> Result<untyped_ir::Term<'_>, CompilationError<'_>> {
+        Pipeline::default()
+            .validate_rec(ImportId(0), leak_file_info(src), &mut DummyImporter)
+            .map(|v| v.into_iter().last().unwrap().1)
+    }
+    fn type_check(src: &'_ str) -> Result<(typed_ir::Term<'_>, String), CompilationError<'_>> {
+        Pipeline::default()
+            .type_check_rec(ImportId(0), leak_file_info(src), &mut DummyImporter)
+            .map(|o| o.into_iter().last().map(|(_, t, ty)| (t, ty)).unwrap())
+    }
+    fn evaluate(src: &'_ str) -> Result<(Value<'_>, String), CompilationError<'_>> {
+        Pipeline::default().evaluate_rec(ImportId(0), leak_file_info(src), &mut DummyImporter)
+    }
+
+    #[track_caller]
+    pub(super) fn parse_failure(src: &'_ str) -> ParseError<'_> {
+        match parse(src) {
             Ok(o) => panic!("parse success:\n'{}'\n{:#?}", src, o),
             Err(e) => e,
         }
     }
 
     #[track_caller]
-    fn validate_success(src: &str) -> untyped_ir::Term<'_> {
-        let ast = parse_success(src);
-        match validate(&ast) {
-            Ok(o) => o,
-            Err(e) => panic!("{}", render_error(e, src, "<snippet>")),
-        }
-    }
-
-    #[track_caller]
-    pub fn validate_failure(src: &str) -> ValidationError<'_> {
-        let ast = parse_success(src);
-        match validate(&ast) {
+    pub(super) fn validate_failure(src: &str) -> ValidationError<'_> {
+        match validate(src) {
             Ok(o) => panic!("validate success:\n'{}'\n{:#?}", src, o),
-            Err(e) => e,
+            Err(CompilationError::Validation(e)) => e,
+            Err(error) => panic!("{}", render_error(error)),
         }
     }
 
     #[track_caller]
-    fn type_check_success(src: &str) -> (typed_ir::Term<'_>, String) {
-        let untyped_ir = validate_success(src);
-        match type_check(&untyped_ir) {
-            Ok(o) => o,
-            Err(e) => panic!("{}", render_error(e, src, "<snippet>")),
-        }
-    }
-
-    #[track_caller]
-    pub fn type_check_failure(src: &str) -> TypeCheckError<'_> {
-        let ast = validate_success(src);
-        match type_check(&ast) {
+    pub(super) fn type_check_failure(src: &'_ str) -> TypeCheckError<'_> {
+        match type_check(src) {
             Ok(o) => panic!("type check success:\n'{}'\n{:#?}", src, o),
-            Err(e) => e,
+            Err(CompilationError::TypeCheck(e)) => e,
+            Err(error) => panic!("{}", render_error(error)),
         }
     }
 
-    #[track_caller]
-    fn evaluate_success(src: &str) -> (Value<'_>, String) {
-        let (typed_ir, ty) = type_check_success(src);
-        match evaluate(&typed_ir) {
-            Ok(o) => (o, ty),
-            Err(e) => panic!("{}", render_error(e, src, "<snippet>")),
-        }
-    }
-
-    pub fn wrapped(wrappers: &[impl Fn(&str) -> String], inner: &str) -> String {
+    pub(super) fn wrapped(wrappers: &[impl Fn(&str) -> String], inner: &str) -> String {
         let mut res = inner.to_string();
         for wrapper in wrappers {
             res = wrapper(&res);
@@ -86,33 +98,33 @@ mod utils {
         res
     }
 
-    pub fn def(signature: &str, body: &str) -> impl Fn(&str) -> String {
+    pub(super) fn def(signature: &str, body: &str) -> impl Fn(&str) -> String {
         move |s: &str| ["(", body, ").\n  \\ ", signature, "\n", s].join("")
     }
 
     #[track_caller]
-    pub fn parse_eq(src1: &str, src2: &str) {
-        assert_eq!(parse_success(src1), parse_success(src2))
+    pub(super) fn parse_eq(src1: &str, src2: &str) {
+        assert_eq!(success(parse(src1)), success(parse(src2)))
     }
 
     #[track_caller]
-    pub fn type_check_eq(src1: &str, src2: &str) {
-        assert_eq!(type_check_success(src1), type_check_success(src2))
+    pub(super) fn type_check_eq(src1: &str, src2: &str) {
+        assert_eq!(success(type_check(src1)), success(type_check(src2)))
     }
 
     #[track_caller]
-    pub fn type_check_type_eq(src1: &str, src2: &str) {
-        assert_eq!(type_check_success(src1).1, type_check_success(src2).1)
+    pub(super) fn type_check_type_eq(src1: &str, src2: &str) {
+        assert_eq!(success(type_check(src1)).1, success(type_check(src2)).1)
     }
 
     #[track_caller]
-    pub fn evaluate_eq(src1: &str, src2: &str) {
-        assert_eq!(evaluate_success(src1).0, evaluate_success(src2).0)
+    pub(super) fn evaluate_eq(src1: &str, src2: &str) {
+        assert_eq!(success(evaluate(src1)).0, success(evaluate(src2)).0)
     }
 
     #[track_caller]
-    pub fn evaluate_check_type(src: &str, ty: &str) {
-        assert_eq!(evaluate_success(src).1, ty)
+    pub(super) fn evaluate_check_type(src: &str, ty: &str) {
+        assert_eq!(success(evaluate(src)).1, ty)
     }
 }
 
@@ -606,4 +618,17 @@ fn type_arg_inference() {
         "([T] [R >T] R -> R) -> bool",
     );
     evaluate_check_type(r"(?T ?R >T \r:R r)[!] true", "bool");
+}
+
+#[test]
+fn importing() {
+    parse_failure(r"import asd/asd");
+    parse_failure(r"import asd /asd");
+    parse_failure(r"import asd\ /asd");
+    parse_failure(r"import .");
+    parse_failure(r"import @");
+    validate_failure(r"import ./asd/asd");
+    validate_failure(r"import @/asd/asd");
+    validate_failure(r"import @/asd/asd/asd");
+    validate_failure(r"import ./.");
 }

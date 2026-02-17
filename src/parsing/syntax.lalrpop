@@ -1,7 +1,7 @@
 use crate::reprs::ast::*;
-use crate::{common::WithInfo, reprs::common::Span};
+use crate::{common::WithInfo, reprs::common::{FileInfo, Span}};
 
-grammar();
+grammar(file_info: &'input FileInfo<'input>);
 
 extern {
     type Error = crate::parsing::UserParserError;
@@ -21,18 +21,22 @@ Box<T>: Box<T> = <T> => Box::new(<>);
 match {
     r"\s*" => {},
     r"//[^\n\r]*[\n\r]*" => {},
+
+    _,
+
+    r"[a-zA-Z]+" => IDENT,
 } else {
-    _
+    r"(\.|@)/[^\s]+" => PATH,
 }
 
-Ident: Ident<'input> = <start:@L> <text:r"[a-zA-Z]+"> => Ident(Span { text, start, });
+FILE_PATH = { PATH, IDENT }
 
-WithInfo<T>: WithInfo<Span<'input>, T> = {
-    <start:@L> <inner:T> <end:@R> => WithInfo(Span {
-        text: &input[start..end],
-        start,
-    }, inner),
-}
+Spanned<T>: (Span<'input>, T) = <start:@L> <inner:T> <end:@R> => (Span::new(file_info, start..end), inner);
+
+WithInfo<T>: WithInfo<Span<'input>, T> = <s:Spanned<T>> => WithInfo(s.0, s.1);
+
+Ident: Ident<'input> = Spanned<IDENT> => Ident(<>.0);
+FilePath: FilePath<'input> = Spanned<FILE_PATH> => FilePath(<>.0);
 
 pub Term: Term<'input> = WithInfo<RawTerm>;
 
@@ -68,6 +72,8 @@ SimpleTerm: RawTerm<'input> = {
     "(" <RawTerm> ")",
 
     Ident => RawTerm::Var(<>),
+
+    "import" <FilePath> => RawTerm::Import(<>),
 
     "enum" <(":" <Type>)?> <Ident> => RawTerm::Enum(<>),
     "match" <ty:(":" <Type>)?> "{" <arms:CommaSep<(Ident Term)>> "}" => RawTerm::Match(ty, arms.into_boxed_slice()),
