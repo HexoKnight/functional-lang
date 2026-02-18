@@ -1,14 +1,11 @@
 use itertools::{Itertools, zip_eq};
 
-use crate::{
-    reprs::common::Lvl,
-    typing::{
-        InternedType, TyConfig,
-        context::{ContextInner, TyArenaContext, TyVarContext},
-        error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
-        ty::{TyBounds, TyDisplay, Type},
-        ty_eq,
-    },
+use crate::typing::{
+    InternedType, TyConfig,
+    context::{ContextInner, TyArenaContext, TyVarContext},
+    error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
+    ty::{TyBounds, TyDisplay, Type},
+    ty_eq,
 };
 
 use self::{context::Context, inference::TyVar};
@@ -662,6 +659,79 @@ fn expect_type_rec<'a>(
 
     let relation = if subtype { "subtype" } else { "supertype" };
 
+    let handle_found_ty_var = |level_found| {
+        let (name, var_found) = ctx.get_found_ty_var_unwrap(level_found)?;
+        match var_found {
+            TyVar::Unbound(bounds_found) => {
+                // a type is guaranteed to be a supertype/subtype of the instantiated type iff it is a
+                // supertype/subtype of the upper/lower bound (due to the transitivity of subtyping)
+                let bound_found = if subtype {
+                    bounds_found.get_upper(ctx)
+                } else {
+                    bounds_found.get_lower(ctx)
+                };
+                expect_type_rec(
+                    expected,
+                    bound_found,
+                    subtype,
+                    TyConfig::ty_inference_disabled(),
+                    ctx,
+                )
+                .try_wrap_error(|| {
+                    Ok(PlainContextError::new(format!(
+                        "subtyping must be guaranteed \
+                        for all possible instantiations of type var: {}\n\
+                        for example, one such instantiation is: {}",
+                        found.display(ctx.fnd_ctx())?,
+                        bound_found.display(ctx.fnd_ctx())?
+                    )))
+                })?;
+            }
+            TyVar::Inferred(ty_constraint) => {
+                ty_constraint
+                    .constrain(level_found, expected, subtype, ctx)
+                    .map_err(if ty_config.ty_infer_fail {
+                        ContextError::into_type_inference_err
+                    } else {
+                        std::convert::identity
+                    })
+                    .try_wrap_error(|| {
+                        Ok(PlainContextError::new(format!(
+                            "failed to infer type argument: {name}"
+                        )))
+                    })?;
+            }
+        }
+        Ok(found)
+    };
+
+    let handle_expected_ty_var = |level_expected| {
+        let (_, bounds_expected) = ctx.get_expected_ty_var_unwrap(level_expected)?;
+        // a type is guaranteed to be a subtype/supertype of the instantiated type iff it is a
+        // subtype/supertype of the lower/upper bound (due to the transitivity of subtyping)
+        let bound_expected = if subtype {
+            bounds_expected.get_lower(ctx)
+        } else {
+            bounds_expected.get_upper(ctx)
+        };
+        expect_type_rec(
+            bound_expected,
+            found,
+            subtype,
+            TyConfig::ty_inference_disabled(),
+            ctx,
+        )
+        .try_wrap_error(|| {
+            Ok(PlainContextError::new(format!(
+                "subtyping must be guaranteed \
+                for all possible instantiations of type var: {}\n\
+                for example, one such instantiation is: {}",
+                expected.display(ctx.exp_ctx())?,
+                bound_expected.display(ctx.exp_ctx())?
+            )))
+        })
+    };
+
     match (expected, found, subtype) {
         (Type::Bool, Type::Bool, _)
         | (_, Type::Any, false)
@@ -773,17 +843,13 @@ fn expect_type_rec<'a>(
             } else if mapped_level_expected.deeper_than(*level_found) {
                 // if levels are not equal (as above), we 'instantiate' the deeper ty_var first to avoid
                 // cyclic dependency issues (as earlier ty_vars cannot reference later ones)
-                handle_expected_ty_var(expected, found, *level_expected, subtype, ctx)
+                handle_expected_ty_var(*level_expected)
             } else {
-                handle_found_ty_var(expected, found, *level_found, subtype, ty_config, ctx)
+                handle_found_ty_var(*level_found)
             }
         }
-        (Type::TyVar(level_expected), found, _) => {
-            handle_expected_ty_var(expected, found, *level_expected, subtype, ctx)
-        }
-        (expected, Type::TyVar(level_found), _) => {
-            handle_found_ty_var(expected, found, *level_found, subtype, ty_config, ctx)
-        }
+        (Type::TyVar(level_expected), _, _) => handle_expected_ty_var(*level_expected),
+        (_, Type::TyVar(level_found), _) => handle_found_ty_var(*level_found),
         (
             Type::Arr {
                 arg: arg_expected,
@@ -925,92 +991,6 @@ fn expect_type_rec<'a>(
             |   {}",
             expected.display(ctx.exp_ctx())?,
             found.display(ctx.fnd_ctx())?
-        )))
-    })
-}
-
-fn handle_found_ty_var<'a>(
-    expected: InternedType<'a>,
-    found: InternedType<'a>,
-    level_found: Lvl,
-    subtype: bool,
-    ty_config: TyConfig,
-    ctx: &Context<'a, '_>,
-) -> Result<InternedType<'a>, ContextError<'static>> {
-    let (name, var_found) = ctx.get_found_ty_var_unwrap(level_found)?;
-    match var_found {
-        TyVar::Unbound(bounds_found) => {
-            // a type is guaranteed to be a supertype/subtype of the instantiated type iff it is a
-            // supertype/subtype of the upper/lower bound (due to the transitivity of subtyping)
-            let bound_found = if subtype {
-                bounds_found.get_upper(ctx)
-            } else {
-                bounds_found.get_lower(ctx)
-            };
-            expect_type_rec(
-                expected,
-                bound_found,
-                subtype,
-                TyConfig::ty_inference_disabled(),
-                ctx,
-            )
-            .try_wrap_error(|| {
-                Ok(PlainContextError::new(format!(
-                    "subtyping must be guaranteed \
-                    for all possible instantiations of type var: {}\n\
-                    for example, one such instantiation is: {}",
-                    found.display(ctx.fnd_ctx())?,
-                    bound_found.display(ctx.fnd_ctx())?
-                )))
-            })?;
-        }
-        TyVar::Inferred(ty_constraint) => {
-            ty_constraint
-                .constrain(level_found, expected, subtype, ctx)
-                .map_err(if ty_config.ty_infer_fail {
-                    ContextError::into_type_inference_err
-                } else {
-                    std::convert::identity
-                })
-                .try_wrap_error(|| {
-                    Ok(PlainContextError::new(format!(
-                        "failed to infer type argument: {name}"
-                    )))
-                })?;
-        }
-    }
-    Ok(found)
-}
-
-fn handle_expected_ty_var<'a>(
-    expected: InternedType<'a>,
-    found: InternedType<'a>,
-    level_expected: Lvl,
-    subtype: bool,
-    ctx: &Context<'a, '_>,
-) -> Result<InternedType<'a>, ContextError<'static>> {
-    let (_, bounds_expected) = ctx.get_expected_ty_var_unwrap(level_expected)?;
-    // a type is guaranteed to be a subtype/supertype of the instantiated type iff it is a
-    // subtype/supertype of the lower/upper bound (due to the transitivity of subtyping)
-    let bound_expected = if subtype {
-        bounds_expected.get_lower(ctx)
-    } else {
-        bounds_expected.get_upper(ctx)
-    };
-    expect_type_rec(
-        bound_expected,
-        found,
-        subtype,
-        TyConfig::ty_inference_disabled(),
-        ctx,
-    )
-    .try_wrap_error(|| {
-        Ok(PlainContextError::new(format!(
-            "subtyping must be guaranteed \
-            for all possible instantiations of type var: {}\n\
-            for example, one such instantiation is: {}",
-            expected.display(ctx.exp_ctx())?,
-            bound_expected.display(ctx.exp_ctx())?
         )))
     })
 }
