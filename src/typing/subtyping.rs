@@ -41,7 +41,7 @@ mod context {
         inner: &'inn ContextInner<'a>,
 
         orignial_stack_depth: Lvl,
-        expected_ty_var_stack: Stack<(&'a str, TyBounds<'a>)>,
+        expected_ty_var_stack: Stack<(&'a str, TyVar<'a>)>,
         found_ty_var_stack: Stack<(&'a str, TyVar<'a>)>,
 
         /// maps `expected_..` levels to `found_..` `TyVar::Unbound` levels
@@ -50,15 +50,15 @@ mod context {
 
     impl<'a, 'inn> Context<'a, 'inn> {
         pub(super) fn from(ctx: &ctx!()) -> Self {
-            let expected_ty_var_stack: Vec<_> = ctx.get_ty_vars().collect();
+            let ty_var_stack: Vec<_> = ctx
+                .get_ty_vars()
+                .map(|(name, ty_var)| (name, TyVar::Unbound(ty_var)))
+                .collect();
             Self {
                 inner: ctx.get_inner(),
-                orignial_stack_depth: Lvl::get_depth(&expected_ty_var_stack),
-                expected_ty_var_stack,
-                found_ty_var_stack: ctx
-                    .get_ty_vars()
-                    .map(|(name, ty_var)| (name, TyVar::Unbound(ty_var)))
-                    .collect(),
+                orignial_stack_depth: Lvl::get_depth(&ty_var_stack),
+                expected_ty_var_stack: ty_var_stack.clone(),
+                found_ty_var_stack: ty_var_stack,
                 unbound_map: HashMap::new(),
             }
         }
@@ -85,14 +85,14 @@ mod context {
             let found_level = Lvl::get_depth(&new.found_ty_var_stack);
 
             new.expected_ty_var_stack
-                .push((ty_var_name_expected, ty_var));
+                .push((ty_var_name_expected, TyVar::Unbound(ty_var)));
             new.found_ty_var_stack
                 .push((ty_var_name_found, TyVar::Unbound(ty_var)));
             new.unbound_map.insert(expected_level, found_level);
             new
         }
 
-        pub(super) fn push_inferred_ty_var(
+        pub(super) fn push_fnd_inferred_ty_var(
             &self,
             ty_var_name: &'a str,
             initial_bounds: TyBounds<'a>,
@@ -135,8 +135,10 @@ mod context {
             }
         }
 
-        pub(super) fn get_expected_ty_var(&self, level: Lvl) -> Option<(&'a str, TyBounds<'a>)> {
-            level.get(&self.expected_ty_var_stack).copied()
+        pub(super) fn get_expected_ty_var(&self, level: Lvl) -> Option<(&'a str, &TyVar<'a>)> {
+            level
+                .get(&self.expected_ty_var_stack)
+                .map(|(name, ty_var)| (*name, ty_var))
         }
 
         pub(super) fn get_found_ty_var(&self, level: Lvl) -> Option<(&'a str, &TyVar<'a>)> {
@@ -149,7 +151,7 @@ mod context {
         pub(super) fn get_expected_ty_var_unwrap(
             &self,
             level: Lvl,
-        ) -> Result<(&'a str, TyBounds<'a>), IllegalError<'static>> {
+        ) -> Result<(&'a str, &TyVar<'a>), IllegalError<'static>> {
             // explicit match to allow `#[track_caller]`
             match self.get_expected_ty_var(level) {
                 Some(ty_var) => Ok(ty_var),
@@ -198,6 +200,16 @@ mod context {
                 .iter()
                 .map(|(name, ty_var)| (*name, ty_var.get_bounds()))
                 .collect()
+        }
+
+        pub(super) fn fnd_as_exp(&self) -> Self {
+            Self {
+                inner: self.inner,
+                orignial_stack_depth: Lvl::get_depth(&self.found_ty_var_stack),
+                expected_ty_var_stack: self.found_ty_var_stack.clone(),
+                found_ty_var_stack: self.found_ty_var_stack.clone(),
+                unbound_map: HashMap::new(),
+            }
         }
 
         /// Returns whether the expected and found ty var stacks are the same (have not diverged).
@@ -281,7 +293,7 @@ mod inference {
         pub(super) fn constrain(
             &self,
             level: Lvl,
-            expected: InternedType<'a>,
+            ty: InternedType<'a>,
             subtype: bool,
             ctx: &Context<'a, '_>,
         ) -> Result<(), ContextError<'static>> {
@@ -310,20 +322,20 @@ mod inference {
                 )
             }
 
-            if let Type::Unknown = expected {
+            if let Type::Unknown = ty {
                 return Ok(());
             }
 
             let merge_ctx = MultiContext(ctx.get_inner(), ctx.fnd_ctx_without_inferred());
 
             if subtype {
-                let upper = map_vars(expected, |bounds| bounds.get_lower(ctx), level, ctx)?;
+                let upper = map_vars(ty, |bounds| bounds.get_lower(ctx), level, ctx)?;
 
                 let current_upper = self.0.borrow().upper;
                 let new_upper = meet([upper, current_upper], &merge_ctx)?;
                 self.0.borrow_mut().upper = new_upper;
             } else {
-                let lower = map_vars(expected, |bounds| bounds.get_upper(ctx), level, ctx)?;
+                let lower = map_vars(ty, |bounds| bounds.get_upper(ctx), level, ctx)?;
 
                 let current_lower = self.0.borrow().lower;
                 let new_lower = join([lower, current_lower], &merge_ctx)?;
@@ -367,19 +379,22 @@ mod inference {
             }
 
             // technically we don't really expect either but this is close enough
-            // TODO: the context passed here is not correct and can cause illegal errors
-            // but using the correct context (ie. some derivative of `ctx.fnd_ctx*()`)
-            // causes a type arg inference regression
-            expect_type_rec(upper, lower, true, TyConfig::ty_inference_disabled(), ctx)
-                .try_wrap_error(|| {
-                    Ok(PlainContextError::new(format!(
-                        "unable to satisfy constraints:\n\
+            expect_type_rec(
+                upper,
+                lower,
+                true,
+                TyConfig::ty_inference_disabled(),
+                &ctx.fnd_as_exp(),
+            )
+            .try_wrap_error(|| {
+                Ok(PlainContextError::new(format!(
+                    "unable to satisfy constraints:\n\
                         upper: {}\n\
                         lower: {}",
-                        upper.display(ctx.fnd_ctx())?,
-                        lower.display(ctx.fnd_ctx())?
-                    )))
-                })?;
+                    upper.display(ctx.fnd_ctx())?,
+                    lower.display(ctx.fnd_ctx())?
+                )))
+            })?;
 
             #[cfg(debug_assertions)]
             {
@@ -659,20 +674,29 @@ fn expect_type_rec<'a>(
 
     let relation = if subtype { "subtype" } else { "supertype" };
 
-    let handle_found_ty_var = |level_found| {
-        let (name, var_found) = ctx.get_found_ty_var_unwrap(level_found)?;
-        match var_found {
-            TyVar::Unbound(bounds_found) => {
+    let handle_ty_var = |level, is_found| {
+        let ((name, ty_var), var, other) = if is_found {
+            (ctx.get_found_ty_var_unwrap(level)?, found, expected)
+        } else {
+            (ctx.get_expected_ty_var_unwrap(level)?, expected, found)
+        };
+        let ty = match ty_var {
+            TyVar::Unbound(bounds) => {
                 // a type is guaranteed to be a supertype/subtype of the instantiated type iff it is a
                 // supertype/subtype of the upper/lower bound (due to the transitivity of subtyping)
-                let bound_found = if subtype {
-                    bounds_found.get_upper(ctx)
+                let bound = if subtype == is_found {
+                    bounds.get_upper(ctx)
                 } else {
-                    bounds_found.get_lower(ctx)
+                    bounds.get_lower(ctx)
+                };
+                let var_ctx = if is_found {
+                    ctx.fnd_ctx()
+                } else {
+                    ctx.exp_ctx()
                 };
                 expect_type_rec(
-                    expected,
-                    bound_found,
+                    if is_found { expected } else { bound },
+                    if is_found { bound } else { found },
                     subtype,
                     TyConfig::ty_inference_disabled(),
                     ctx,
@@ -682,14 +706,14 @@ fn expect_type_rec<'a>(
                         "subtyping must be guaranteed \
                         for all possible instantiations of type var: {}\n\
                         for example, one such instantiation is: {}",
-                        found.display(ctx.fnd_ctx())?,
-                        bound_found.display(ctx.fnd_ctx())?
+                        var.display(var_ctx.clone())?,
+                        bound.display(var_ctx)?
                     )))
-                })?;
+                })?
             }
             TyVar::Inferred(ty_constraint) => {
                 ty_constraint
-                    .constrain(level_found, expected, subtype, ctx)
+                    .constrain(level, other, subtype, ctx)
                     .map_err(if ty_config.ty_infer_fail {
                         ContextError::into_type_inference_err
                     } else {
@@ -700,36 +724,10 @@ fn expect_type_rec<'a>(
                             "failed to infer type argument: {name}"
                         )))
                     })?;
+                other
             }
-        }
-        Ok(found)
-    };
-
-    let handle_expected_ty_var = |level_expected| {
-        let (_, bounds_expected) = ctx.get_expected_ty_var_unwrap(level_expected)?;
-        // a type is guaranteed to be a subtype/supertype of the instantiated type iff it is a
-        // subtype/supertype of the lower/upper bound (due to the transitivity of subtyping)
-        let bound_expected = if subtype {
-            bounds_expected.get_lower(ctx)
-        } else {
-            bounds_expected.get_upper(ctx)
         };
-        expect_type_rec(
-            bound_expected,
-            found,
-            subtype,
-            TyConfig::ty_inference_disabled(),
-            ctx,
-        )
-        .try_wrap_error(|| {
-            Ok(PlainContextError::new(format!(
-                "subtyping must be guaranteed \
-                for all possible instantiations of type var: {}\n\
-                for example, one such instantiation is: {}",
-                expected.display(ctx.exp_ctx())?,
-                bound_expected.display(ctx.exp_ctx())?
-            )))
-        })
+        Ok(ty)
     };
 
     match (expected, found, subtype) {
@@ -809,7 +807,7 @@ fn expect_type_rec<'a>(
             _,
         ) => {
             if ty_config.infer_ty_args {
-                let (ctx_, constraint) = ctx.push_inferred_ty_var(name, *bounds);
+                let (ctx_, constraint) = ctx.push_fnd_inferred_ty_var(name, *bounds);
                 expect_type_rec(expected, found, subtype, ty_config, &ctx_).and_then(|result| {
                     drop(ctx_);
                     let level = ctx.next_found_ty_var_level();
@@ -843,13 +841,13 @@ fn expect_type_rec<'a>(
             } else if mapped_level_expected.deeper_than(*level_found) {
                 // if levels are not equal (as above), we 'instantiate' the deeper ty_var first to avoid
                 // cyclic dependency issues (as earlier ty_vars cannot reference later ones)
-                handle_expected_ty_var(*level_expected)
+                handle_ty_var(*level_expected, false)
             } else {
-                handle_found_ty_var(*level_found)
+                handle_ty_var(*level_found, true)
             }
         }
-        (Type::TyVar(level_expected), _, _) => handle_expected_ty_var(*level_expected),
-        (_, Type::TyVar(level_found), _) => handle_found_ty_var(*level_found),
+        (Type::TyVar(level_expected), _, _) => handle_ty_var(*level_expected, false),
+        (_, Type::TyVar(level_found), _) => handle_ty_var(*level_found, true),
         (
             Type::Arr {
                 arg: arg_expected,
