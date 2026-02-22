@@ -69,7 +69,7 @@ impl Pipeline {
                 .read(import_id)
                 .map_err(|err| ValidationError::FailedImport {
                     path,
-                    info: err.into(),
+                    info: err.into_msg().into(),
                     span,
                 })?;
 

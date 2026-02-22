@@ -2,13 +2,14 @@ use std::collections::HashMap;
 
 use include_dir::{Dir, File, include_dir};
 use typed_arena::Arena;
-use typed_path::{Utf8Path, Utf8PlatformPathBuf, Utf8UnixPath};
+use typed_path::{Utf8Path, Utf8PlatformPathBuf, Utf8UnixPath, Utf8UnixPathBuf};
 
 use functional_lang::{
     error::CompilationError,
     evaluation,
     pipeline::Pipeline,
-    reprs::common::{FileInfo, ImportId, ImportResolver, Importer},
+    reprs::common::{FileInfo, ImportError, ImportId, ImportResolver, Importer},
+    stdlib::resolve_std_import,
     typing,
 };
 
@@ -30,61 +31,97 @@ fn get_parent(path: Utf8PlatformPathBuf) -> Utf8PlatformPathBuf {
     path.parent().map(Utf8Path::to_path_buf).unwrap_or(path)
 }
 
-fn get_import<'i, 'a>(
-    imports: &'a HashMap<ImportId, (Utf8PlatformPathBuf, &'i FileInfo<'i>)>,
-    import_id: ImportId,
-) -> Result<&'a (Utf8PlatformPathBuf, &'i FileInfo<'i>), String> {
+type ImportInfo<'i> = (Option<&'i str>, Utf8PlatformPathBuf, &'i FileInfo<'i>);
+type Imports<'i> = HashMap<ImportId, ImportInfo<'i>>;
+
+fn find_import<'i, 'a>(
+    imports: &'a Imports<'i>,
+    name: impl for<'s> PartialEq<&'s str>,
+) -> Option<ImportId> {
     imports
-        .get(&import_id)
-        .ok_or_else(|| "import from within an as yet unimported file".to_string())
+        .iter()
+        .find_map(|(import_id, (_, _, file_info))| (name == file_info.name()).then_some(*import_id))
+}
+
+fn get_import<'i, 'a>(
+    imports: &'a Imports<'i>,
+    import_id: ImportId,
+) -> Result<&'a ImportInfo<'i>, ImportError> {
+    imports.get(&import_id).ok_or_else(|| {
+        ImportError::Other("import from within an as yet unimported file".to_string())
+    })
 }
 
 fn new_file_info<'i>(path: &str, text: &'i str) -> FileInfo<'i> {
     FileInfo::new([EXAMPLES_DIR_PATH, path].join("/"), text)
 }
 
+enum ImportType<'i> {
+    Package(&'i str),
+    Relative(ImportId),
+}
+
 struct ImportHandler<'i> {
-    imports: HashMap<ImportId, (Utf8PlatformPathBuf, &'i FileInfo<'i>)>,
+    imports: Imports<'i>,
     file_info_arena: &'i Arena<FileInfo<'i>>,
 }
 
-impl<'i> ImportResolver for ImportHandler<'i> {
-    fn resolve(&mut self, current: ImportId, path: &str) -> Result<ImportId, String> {
+impl<'i> ImportHandler<'i> {
+    fn resolve_import(
+        &mut self,
+        import_type: ImportType<'i>,
+        path: &str,
+    ) -> Result<ImportId, ImportError> {
         let path = Utf8UnixPath::new(path);
         if !path.is_valid() {
-            return Err(format!("path is not valid: '{path}'"));
+            return Err(ImportError::Path(format!("path is not valid: '{path}'")));
         }
         if !path.is_relative() {
-            return Err(format!("path is not relative: '{path}'"));
+            return Err(ImportError::Path(format!("path is not relative: '{path}'")));
         }
 
         let path = path
             .with_platform_encoding_checked()
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| ImportError::Path(err.to_string()))?;
 
-        let path = {
-            let (current_dir, _) = get_import(&self.imports, current)?;
+        let (package, path) = {
+            match import_type {
+                ImportType::Package(package) => {
+                    let mut full_name = Utf8UnixPathBuf::new();
+                    full_name.push_checked(format!("@{package}"));
+                    full_name.push_checked(&path);
+                    (Some(package), full_name)
+                }
+                ImportType::Relative(current) => {
+                    let (current_package, current_dir, _) = get_import(&self.imports, current)?;
 
-            current_dir
-                .join_checked(path)
-                .map_err(|err| err.to_string())?
-                .normalize()
+                    (
+                        *current_package,
+                        current_dir
+                            .join_checked(path)
+                            .map_err(|err| ImportError::Path(err.to_string()))?
+                            .normalize(),
+                    )
+                }
+            }
         };
 
-        if let Some(import_id) = self.imports.iter().find_map(|(import_id, (_, file_info))| {
-            (file_info.name() == path).then_some(*import_id)
-        }) {
+        if let Some(import_id) = find_import(&self.imports, &path) {
             return Ok(import_id);
         }
+        let text = {
+            let file = EXAMPLES_DIR.get_file(&path).ok_or_else(|| {
+                ImportError::Path(format!(
+                    "path not found: {}\n{:#?}",
+                    path,
+                    EXAMPLES_DIR.entries()
+                ))
+            })?;
+            std::str::from_utf8(file.contents())
+                .map_err(|err| ImportError::Other(err.to_string()))?
+        };
 
-        let file = EXAMPLES_DIR
-            .get_file(&path)
-            .ok_or_else(|| format!("path not found: {}\n{:#?}", path, EXAMPLES_DIR.entries()))?;
-
-        let file_info = new_file_info(
-            path.as_str(),
-            std::str::from_utf8(file.contents()).map_err(|err| err.to_string())?,
-        );
+        let file_info = new_file_info(path.as_str(), text);
 
         let import_dir = get_parent(path);
 
@@ -92,16 +129,88 @@ impl<'i> ImportResolver for ImportHandler<'i> {
 
         self.imports.insert(
             import_id,
-            (import_dir, self.file_info_arena.alloc(file_info)),
+            (None, import_dir, self.file_info_arena.alloc(file_info)),
         );
 
         Ok(import_id)
     }
 }
 
+impl<'i> ImportResolver for ImportHandler<'i> {
+    fn resolve_relative(&mut self, current: ImportId, path: &str) -> Result<ImportId, ImportError> {
+        let path = Utf8UnixPath::new(path);
+        if !path.is_valid() {
+            return Err(ImportError::Path(format!("path is not valid: '{path}'")));
+        }
+        if !path.is_relative() {
+            return Err(ImportError::Path(format!("path is not relative: '{path}'")));
+        }
+
+        let path = path
+            .with_platform_encoding_checked()
+            .map_err(|err| ImportError::Path(err.to_string()))?;
+
+        let (current_package, current_dir, _) = get_import(&self.imports, current)?;
+
+        if let Some(current_package) = current_package {}
+
+        let path = current_dir
+            .join_checked(path)
+            .map_err(|err| ImportError::Path(err.to_string()))?
+            .normalize();
+
+        if let Some(import_id) = find_import(&self.imports, &path) {
+            return Ok(import_id);
+        }
+
+        let file = EXAMPLES_DIR.get_file(&path).ok_or_else(|| {
+            ImportError::Path(format!(
+                "path not found: {}\n{:#?}",
+                path,
+                EXAMPLES_DIR.entries()
+            ))
+        })?;
+        let text = std::str::from_utf8(file.contents())
+            .map_err(|err| ImportError::Other(err.to_string()))?;
+
+        let file_info = new_file_info(path.as_str(), text);
+
+        let import_dir = get_parent(path);
+
+        let import_id = ImportId(self.imports.len());
+
+        self.imports.insert(
+            import_id,
+            (None, import_dir, self.file_info_arena.alloc(file_info)),
+        );
+
+        Ok(import_id)
+    }
+
+    fn resolve_package(&mut self, package: &str, path: &str) -> Result<ImportId, ImportError> {
+        let full_name = format!("@{package}/{path}");
+
+        if let Some(import_id) = find_import(&self.imports, &full_name) {
+            return Ok(import_id);
+        }
+
+        let "std" = package else {
+            return Err(ImportError::Package(
+                "only the stdlib module 'std' is supported".to_string(),
+            ));
+        };
+
+        let text = resolve_std_import(path)?;
+
+        let file_info = new_file_info(path, text);
+
+        let import_dir = get_parent(path);
+    }
+}
+
 impl<'i> Importer<'i> for ImportHandler<'i> {
-    fn read(&self, import_id: ImportId) -> Result<&'i FileInfo<'i>, String> {
-        get_import(&self.imports, import_id).map(|(_, file_info)| *file_info)
+    fn read(&self, import_id: ImportId) -> Result<&'i FileInfo<'i>, ImportError> {
+        get_import(&self.imports, import_id).map(|(_, _, file_info)| *file_info)
     }
 }
 
@@ -126,6 +235,7 @@ fn run_input<'i>(
     imports.insert(
         initial,
         (
+            None,
             get_parent(Utf8PlatformPathBuf::from(initial_path)),
             file_info,
         ),

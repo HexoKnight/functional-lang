@@ -3,6 +3,7 @@ pub mod error;
 pub mod hashed_hashmap;
 pub mod intern;
 pub mod macros;
+pub mod stdlib;
 
 pub mod evaluation;
 pub mod parsing;
