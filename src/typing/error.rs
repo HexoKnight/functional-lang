@@ -9,10 +9,10 @@ use crate::{error::RenderError, reprs::common::Span};
 
 #[derive(Clone)]
 pub enum TypeCheckError<'i> {
-    Illegal(IllegalError<'i>),
+    Illegal(Box<IllegalError<'i>>),
     NonTerminalTypeInference,
 
-    Spanned(SpannedError<'i>, Option<Box<ContextError<'i>>>),
+    Spanned(Box<SpannedError<'i>>, Option<Box<ContextError<'i>>>),
 }
 
 #[derive(Clone)]
@@ -52,12 +52,12 @@ pub struct PlainContextError {
 
 impl<'i> From<IllegalError<'i>> for TypeCheckError<'i> {
     fn from(value: IllegalError<'i>) -> Self {
-        Self::Illegal(value)
+        Self::Illegal(Box::new(value))
     }
 }
 impl<'i> From<SpannedError<'i>> for TypeCheckError<'i> {
     fn from(value: SpannedError<'i>) -> Self {
-        Self::Spanned(value, None)
+        Self::Spanned(Box::new(value), None)
     }
 }
 
@@ -260,16 +260,14 @@ impl<'i> RenderError<'i> for TypeCheckError<'i> {
                     .push_groups(buf);
             }
 
-            Self::Spanned(
-                SpannedError {
+            Self::Spanned(spanned_err, context) => {
+                let SpannedError {
                     title,
                     span,
                     span_label,
                     context_spans,
                     text,
-                },
-                context,
-            ) => {
+                } = *spanned_err;
                 let group = Level::ERROR
                     .primary_title(title)
                     .element(
@@ -359,7 +357,7 @@ impl<'i> WrapError<SpannedError<'i>> for ContextError<'i> {
         if let Self::NonTerminalTypeInference = prev_err {
             Self::Result::NonTerminalTypeInference
         } else {
-            Self::Result::Spanned(new_err, Some(Box::new(prev_err)))
+            Self::Result::Spanned(Box::new(new_err), Some(Box::new(prev_err)))
         }
     }
 }
