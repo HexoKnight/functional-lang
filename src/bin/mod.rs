@@ -1,14 +1,17 @@
-use std::{io::Read, process::ExitCode};
+use std::{fs::read_to_string, io::Read, process::ExitCode};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, ValueEnum};
 use clio::Input;
 
 use functional_lang::{
     error::CompilationError,
-    evaluation, parsing,
-    reprs::{self},
-    typing, validation,
+    importing::{GenericImportHandler, ImportError, ImportHandlerImpl, Importer},
+    pipeline::Pipeline,
+    reprs::common::FileInfo,
+    stdlib::resolve_std_import,
 };
+use typed_arena::Arena;
+use typed_path::Utf8UnixPath;
 
 #[derive(Parser)]
 #[command(
@@ -17,16 +20,16 @@ use functional_lang::{
     disable_help_subcommand = true
 )]
 struct Cli {
+    #[arg(value_enum)]
+    operation: Operation,
+
     /// Source file to use.
     #[arg(default_value = "-")]
     source_file: Input,
-
-    #[command(subcommand)]
-    subcommands: Subcommands,
 }
 
-#[derive(Subcommand)]
-enum Subcommands {
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum Operation {
     /// Parse source, displaying a representation on stdout
     Parse,
     /// Parse and validate source, displaying a representation on stdout
@@ -37,30 +40,84 @@ enum Subcommands {
     Evaluate,
 }
 
-fn parse<'i>(input: &'i str) -> Result<reprs::ast::Term<'i>, CompilationError<'i>> {
-    let parser = parsing::Parser::default();
-    parser.parse(input).map_err(Into::into)
+struct ImportHandler;
+
+impl<'i> ImportHandlerImpl<'i> for ImportHandler {
+    fn handle_import(
+        &mut self,
+        package: Option<&str>,
+        path: &Utf8UnixPath,
+        full_path: &Utf8UnixPath,
+    ) -> Result<FileInfo<'i>, ImportError> {
+        if let Some(package) = package {
+            let "std" = package else {
+                return Err(ImportError::Package(
+                    "only the stdlib module 'std' is supported".to_string(),
+                ));
+            };
+
+            let text = resolve_std_import(path)?;
+
+            Ok(FileInfo::new(full_path.to_string(), text))
+        } else {
+            let platform_path = full_path
+                .with_platform_encoding_checked()
+                .map_err(|err| ImportError::Path(format!("{err}: '{full_path}'")))?;
+
+            let text = read_to_string(&platform_path)
+                .map_err(|err| ImportError::Path(format!("{err}: '{platform_path}'")))?;
+
+            Ok(FileInfo::new(full_path.to_string(), text))
+        }
+    }
 }
 
-fn validate<'i>(input: &'i str) -> Result<reprs::untyped_ir::Term<'i>, CompilationError<'i>> {
-    let ast = parse(input)?;
-    validation::validate(&ast).map_err(Into::into)
-}
+fn run_pipeline<'i>(
+    operation: Operation,
+    full_path: &str,
+    file_info: FileInfo<'i>,
+    file_info_arena: &'i Arena<FileInfo<'i>>,
+) -> Result<(), CompilationError<'i>> {
+    let (initial, file_info, mut importer) =
+        GenericImportHandler::new(ImportHandler, full_path, file_info, file_info_arena);
 
-fn type_check<'i>(
-    input: &'i str,
-) -> Result<(reprs::typed_ir::Term<'i>, String), CompilationError<'i>> {
-    let untyped_ir = validate(input)?;
-    typing::type_check(&untyped_ir).map_err(Into::into)
-}
-
-fn evaluate<'i>(
-    input: &'i str,
-) -> Result<(reprs::value::Value<'i, ()>, String), CompilationError<'i>> {
-    let (typed_ir, ty) = type_check(input)?;
-
-    let value = evaluation::evaluate(&typed_ir)?;
-    Ok((value, ty))
+    match operation {
+        Operation::Parse => {
+            let ast = Pipeline::default().parse_single(file_info)?;
+            println!("{ast:#?}");
+        }
+        Operation::Validate => {
+            let uirs = Pipeline::default().validate_rec(initial, file_info, &mut importer)?;
+            for (import_id, uir) in uirs {
+                println!(
+                    "{}:\n{uir:#?}\n",
+                    importer
+                        .read(import_id)
+                        .map_err(ImportError::into_msg)
+                        .unwrap()
+                        .name()
+                );
+            }
+        }
+        Operation::TypeCheck => {
+            let tirs = Pipeline::default().type_check_rec(initial, file_info, &mut importer)?;
+            for (import_id, tir, ty) in tirs {
+                println!(
+                    "{}:\n{tir:#?}\n{ty}\n",
+                    importer
+                        .read(import_id)
+                        .map_err(ImportError::into_msg)
+                        .unwrap()
+                        .name()
+                );
+            }
+        }
+        Operation::Evaluate => {
+            let (val, ty) = Pipeline::default().evaluate_rec(initial, file_info, &mut importer)?;
+            println!("{val:#?}\n{ty}")
+        }
+    }
+    Ok(())
 }
 
 fn program() -> Result<(), String> {
@@ -71,21 +128,13 @@ fn program() -> Result<(), String> {
         .read_to_string(&mut input)
         .map_err(|e| format!("failed to read input:\n{e}"))?;
 
-    let origin = cli.source_file.to_string();
+    let full_path = std::str::from_utf8(cli.source_file.path().as_os_str().as_encoded_bytes())
+        .map_err(|e| format!("failed to parse source file path: {e}"))?;
 
-    let result = match cli.subcommands {
-        Subcommands::Parse => parse(&input).map(|ast| format!("{ast:#?}")),
-        Subcommands::Validate => validate(&input).map(|uir| format!("{uir:#?}")),
-        Subcommands::TypeCheck => type_check(&input).map(|(tir, ty)| format!("{tir:#?}\n{ty}")),
-        Subcommands::Evaluate => evaluate(&input).map(|(val, ty)| format!("{val:#?}\n{ty}")),
-    };
+    let file_info = FileInfo::new(full_path, input);
 
-    match result {
-        Ok(res) => println!("{res}"),
-        Err(err) => println!("{}", err.render_styled(&input, &origin)),
-    }
-
-    Ok(())
+    run_pipeline(cli.operation, full_path, file_info, &Arena::new())
+        .map_err(CompilationError::render_styled)
 }
 
 fn main() -> ExitCode {
