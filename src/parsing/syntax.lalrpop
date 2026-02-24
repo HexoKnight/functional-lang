@@ -22,11 +22,31 @@ match {
     r"\s*" => {},
     r"//[^\n\r]*[\n\r]*" => {},
 
-    _,
+    "\\", ":",
+    "?", "<", ">",
+    ".", ",",
+
+    "->", "_", "!",
+
+    "[", "]", "(", ")", "{", "}",
+
+    "import", "enum", "match",
+    "bool", "true", "false",
 
     r"[a-zA-Z]+" => IDENT,
-    r"\./[^\s]+" => RELATIVE_PATH,
-    r"@[a-zA-Z]+/[^\s]+" => PACKAGE_PATH,
+    r"(?x)
+        \./[^
+            \s
+            : , {} ()
+        ]+
+    " => RELATIVE_PATH,
+    r"(?x)
+        @[a-zA-Z]+
+        /[^
+            \s
+            : , {} ()
+        ]+
+    " => PACKAGE_PATH,
 }
 
 Spanned<T>: (Span<'input>, T) = <start:@L> <inner:T> <end:@R> => (Span::new(file_info, start..end), inner);
