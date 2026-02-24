@@ -25,18 +25,22 @@ match {
     _,
 
     r"[a-zA-Z]+" => IDENT,
-} else {
-    r"(\.|@)/[^\s]+" => PATH,
+    r"\./[^\s]+" => RELATIVE_PATH,
+    r"@[a-zA-Z]+/[^\s]+" => PACKAGE_PATH,
 }
-
-FILE_PATH = { PATH, IDENT }
 
 Spanned<T>: (Span<'input>, T) = <start:@L> <inner:T> <end:@R> => (Span::new(file_info, start..end), inner);
 
 WithInfo<T>: WithInfo<Span<'input>, T> = <s:Spanned<T>> => WithInfo(s.0, s.1);
 
 Ident: Ident<'input> = Spanned<IDENT> => Ident(<>.0);
-FilePath: FilePath<'input> = Spanned<FILE_PATH> => FilePath(<>.0);
+ImportPath: ImportPath<'input> = {
+    Spanned<RELATIVE_PATH> => ImportPath::Relative { span: <>.0 },
+    Spanned<PACKAGE_PATH> => {
+        let [package, path] = <>.0.map_text_array(|s| s[1..].split_once('/').map(|(a, b)| [a, b]).unwrap());
+        ImportPath::Package { span: <>.0, package, path }
+    },
+}
 
 pub Term: Term<'input> = WithInfo<RawTerm>;
 
@@ -73,7 +77,7 @@ SimpleTerm: RawTerm<'input> = {
 
     Ident => RawTerm::Var(<>),
 
-    "import" <FilePath> => RawTerm::Import(<>),
+    "import" <ImportPath> => RawTerm::Import(<>),
 
     "enum" <(":" <Type>)?> <Ident> => RawTerm::Enum(<>),
     "match" <ty:(":" <Type>)?> "{" <arms:CommaSep<(Ident Term)>> "}" => RawTerm::Match(ty, arms.into_boxed_slice()),

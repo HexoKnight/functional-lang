@@ -6,8 +6,9 @@ use typed_arena::Arena;
 use crate::{
     common::WithInfo,
     evaluation::context::ContextInner,
+    importing::ImportId,
     reprs::{
-        common::{ArgStructure, ImportId, RawArgStructure},
+        common::{ArgStructure, RawArgStructure},
         typed_ir::{RawTerm, Term},
         value::{self, Closure, Func, RawValue},
     },
@@ -22,7 +23,7 @@ mod context {
 
     use typed_arena::Arena;
 
-    use crate::reprs::common::{Idx, ImportId};
+    use crate::{importing::ImportId, reprs::common::Idx};
 
     use super::Value;
 

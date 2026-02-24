@@ -1,14 +1,15 @@
-use std::collections::HashMap;
-
 use include_dir::{Dir, File, include_dir};
+use itertools::Itertools;
 use typed_arena::Arena;
-use typed_path::{Utf8Path, Utf8PlatformPathBuf, Utf8UnixPath};
+use typed_path::Utf8UnixPath;
 
 use functional_lang::{
     error::CompilationError,
     evaluation,
+    importing::{GenericImportHandler, ImportError, ImportHandlerImpl},
     pipeline::Pipeline,
-    reprs::common::{FileInfo, ImportId, ImportResolver, Importer},
+    reprs::common::FileInfo,
+    stdlib::resolve_std_import,
     typing,
 };
 
@@ -26,82 +27,51 @@ where
     move |e| format!("{info}:\n{e}")
 }
 
-fn get_parent(path: Utf8PlatformPathBuf) -> Utf8PlatformPathBuf {
-    path.parent().map(Utf8Path::to_path_buf).unwrap_or(path)
+fn file_path<'a>(file: &'_ File<'a>) -> &'a str {
+    file.path()
+        .to_str()
+        .expect("`File.path` is a &str internally")
 }
 
-fn get_import<'i, 'a>(
-    imports: &'a HashMap<ImportId, (Utf8PlatformPathBuf, &'i FileInfo<'i>)>,
-    import_id: ImportId,
-) -> Result<&'a (Utf8PlatformPathBuf, &'i FileInfo<'i>), String> {
-    imports
-        .get(&import_id)
-        .ok_or_else(|| "import from within an as yet unimported file".to_string())
-}
-
-fn new_file_info<'i>(path: &str, text: &'i str) -> FileInfo<'i> {
+fn example_file_info<'i>(path: &str, text: &'i str) -> FileInfo<'i> {
     FileInfo::new([EXAMPLES_DIR_PATH, path].join("/"), text)
 }
 
-struct ImportHandler<'i> {
-    imports: HashMap<ImportId, (Utf8PlatformPathBuf, &'i FileInfo<'i>)>,
-    file_info_arena: &'i Arena<FileInfo<'i>>,
-}
+struct ImportHandler;
 
-impl<'i> ImportResolver for ImportHandler<'i> {
-    fn resolve(&mut self, current: ImportId, path: &str) -> Result<ImportId, String> {
-        let path = Utf8UnixPath::new(path);
-        if !path.is_valid() {
-            return Err(format!("path is not valid: '{path}'"));
+impl<'i> ImportHandlerImpl<'i> for ImportHandler {
+    fn handle_import(
+        &mut self,
+        package: Option<&str>,
+        path: &Utf8UnixPath,
+        full_path: &Utf8UnixPath,
+    ) -> Result<FileInfo<'i>, ImportError> {
+        if let Some(package) = package {
+            let "std" = package else {
+                return Err(ImportError::Package(
+                    "only the stdlib module 'std' is supported".to_string(),
+                ));
+            };
+
+            let text = resolve_std_import(path)?;
+
+            Ok(FileInfo::new(full_path.to_string(), text))
+        } else {
+            let platform_path = full_path
+                .with_platform_encoding_checked()
+                .map_err(|err| ImportError::Path(format!("{err}: '{full_path}'")))?;
+
+            let file = EXAMPLES_DIR.get_file(&platform_path).ok_or_else(|| {
+                ImportError::Path(format!(
+                    "path not found: '{platform_path}'\nfound paths:\n  {}",
+                    EXAMPLES_DIR.files().map(file_path).join("\n  ")
+                ))
+            })?;
+            let text = std::str::from_utf8(file.contents())
+                .map_err(|err| ImportError::Other(err.to_string()))?;
+
+            Ok(example_file_info(full_path.as_str(), text))
         }
-        if !path.is_relative() {
-            return Err(format!("path is not relative: '{path}'"));
-        }
-
-        let path = path
-            .with_platform_encoding_checked()
-            .map_err(|err| err.to_string())?;
-
-        let path = {
-            let (current_dir, _) = get_import(&self.imports, current)?;
-
-            current_dir
-                .join_checked(path)
-                .map_err(|err| err.to_string())?
-                .normalize()
-        };
-
-        if let Some(import_id) = self.imports.iter().find_map(|(import_id, (_, file_info))| {
-            (file_info.name() == path).then_some(*import_id)
-        }) {
-            return Ok(import_id);
-        }
-
-        let file = EXAMPLES_DIR
-            .get_file(&path)
-            .ok_or_else(|| format!("path not found: {}\n{:#?}", path, EXAMPLES_DIR.entries()))?;
-
-        let file_info = new_file_info(
-            path.as_str(),
-            std::str::from_utf8(file.contents()).map_err(|err| err.to_string())?,
-        );
-
-        let import_dir = get_parent(path);
-
-        let import_id = ImportId(self.imports.len());
-
-        self.imports.insert(
-            import_id,
-            (import_dir, self.file_info_arena.alloc(file_info)),
-        );
-
-        Ok(import_id)
-    }
-}
-
-impl<'i> Importer<'i> for ImportHandler<'i> {
-    fn read(&self, import_id: ImportId) -> Result<&'i FileInfo<'i>, String> {
-        get_import(&self.imports, import_id).map(|(_, file_info)| *file_info)
     }
 }
 
@@ -111,30 +81,21 @@ fn run_input<'i>(
 ) -> Result<(String, String), CompilationError<'i>> {
     let pipeline = Pipeline::default();
 
-    let initial = ImportId(0);
-    let initial_path = file
+    let full_path = file
         .path()
         .as_os_str()
         .to_str()
         .expect("path in File is a &str");
-    let file_info = &*file_info_arena.alloc(new_file_info(
-        initial_path,
-        file.contents_utf8().expect("example file should be utf8"),
-    ));
 
-    let mut imports = HashMap::new();
-    imports.insert(
-        initial,
-        (
-            get_parent(Utf8PlatformPathBuf::from(initial_path)),
-            file_info,
+    let (initial, file_info, mut importer) = GenericImportHandler::new(
+        ImportHandler,
+        full_path,
+        example_file_info(
+            full_path,
+            file.contents_utf8().expect("example file should be utf8"),
         ),
-    );
-
-    let mut importer = ImportHandler {
-        imports,
         file_info_arena,
-    };
+    );
 
     let untyped_irs = pipeline.validate_rec(initial, file_info, &mut importer)?;
 
@@ -162,7 +123,7 @@ fn run_examples() {
     for file in EXAMPLES_DIR.files() {
         let file_path = file.path().to_string_lossy();
         let (value, ty) = run_file(file)
-            .map_err(info(format!("error evaluating {file_path}")))
+            .map_err(info(format!("error evaluating '{file_path}'")))
             .unwrap_or_else(|e| panic!("{e}"));
         println!("{file_path} produced the value:\n{value}\nwith type:\n{ty}",);
     }

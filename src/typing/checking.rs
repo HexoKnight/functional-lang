@@ -5,8 +5,8 @@ use typed_arena::Arena;
 
 use crate::{
     common::{WithInfo, maybe_zip_eq},
+    importing::ImportId,
     reprs::{
-        common::ImportId,
         typed_ir::{self as tir},
         untyped_ir as uir,
     },
@@ -27,7 +27,8 @@ mod context {
     use std::collections::HashMap;
 
     use crate::{
-        reprs::common::{Idx, ImportId, Lvl},
+        importing::ImportId,
+        reprs::common::{Idx, Lvl},
         typing::{
             InternedType,
             context::{ContextInner, Stack, TyArenaContext, TyVarContext},

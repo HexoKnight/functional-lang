@@ -7,17 +7,15 @@ mod utils {
 
     use functional_lang::{
         error::{CompilationError, RenderError},
+        importing::{GenericImportHandler, ImportError, ImportHandlerImpl, ImportId},
         parsing::ParseError,
         pipeline::Pipeline,
-        reprs::{
-            ast::Term,
-            common::{FileInfo, ImportId, ImportResolver, Importer},
-            typed_ir, untyped_ir,
-            value::Value,
-        },
+        reprs::{ast::Term, common::FileInfo, typed_ir, untyped_ir, value::Value},
+        stdlib::resolve_std_import,
         typing::TypeCheckError,
         validation::ValidationError,
     };
+    use typed_arena::Arena;
 
     use crate::common::render_error;
 
@@ -25,17 +23,45 @@ mod utils {
         Box::leak(Box::new(FileInfo::new("<snippet>", text)))
     }
 
-    struct DummyImporter;
-
-    impl ImportResolver for DummyImporter {
-        fn resolve(&mut self, _current: ImportId, _path: &str) -> Result<ImportId, String> {
-            Err("importing unavailable in current environment".to_string())
-        }
+    fn import_handler(
+        text: &'_ str,
+    ) -> (
+        ImportId,
+        &'_ FileInfo<'_>,
+        GenericImportHandler<'_, ImportHandler>,
+    ) {
+        GenericImportHandler::new(
+            ImportHandler,
+            "<snippet>",
+            FileInfo::new("<snippet>", text),
+            Box::leak(Box::new(Arena::new())),
+        )
     }
 
-    impl<'i> Importer<'i> for DummyImporter {
-        fn read(&self, _import_id: ImportId) -> Result<&'i FileInfo<'i>, String> {
-            Err("importing unavailable in current environment".to_string())
+    struct ImportHandler;
+
+    impl<'i> ImportHandlerImpl<'i> for ImportHandler {
+        fn handle_import(
+            &mut self,
+            package: Option<&str>,
+            path: &typed_path::Utf8UnixPath,
+            full_path: &typed_path::Utf8UnixPath,
+        ) -> Result<FileInfo<'i>, functional_lang::importing::ImportError> {
+            let Some(package) = package else {
+                return Err(ImportError::Other(
+                    "relative importing unavailable in current environment".to_string(),
+                ));
+            };
+
+            let "std" = package else {
+                return Err(ImportError::Package(
+                    "only the stdlib module 'std' is supported".to_string(),
+                ));
+            };
+
+            let text = resolve_std_import(path)?;
+
+            Ok(FileInfo::new(full_path.to_string(), text))
         }
     }
 
@@ -51,17 +77,20 @@ mod utils {
         Pipeline::default().parse_single(leak_file_info(src))
     }
     fn validate(src: &'_ str) -> Result<untyped_ir::Term<'_>, CompilationError<'_>> {
+        let (initial, initial_file_info, mut importer) = import_handler(src);
         Pipeline::default()
-            .validate_rec(ImportId(0), leak_file_info(src), &mut DummyImporter)
+            .validate_rec(initial, initial_file_info, &mut importer)
             .map(|v| v.into_iter().last().unwrap().1)
     }
     fn type_check(src: &'_ str) -> Result<(typed_ir::Term<'_>, String), CompilationError<'_>> {
+        let (initial, initial_file_info, mut importer) = import_handler(src);
         Pipeline::default()
-            .type_check_rec(ImportId(0), leak_file_info(src), &mut DummyImporter)
+            .type_check_rec(initial, initial_file_info, &mut importer)
             .map(|o| o.into_iter().last().map(|(_, t, ty)| (t, ty)).unwrap())
     }
     fn evaluate(src: &'_ str) -> Result<(Value<'_>, String), CompilationError<'_>> {
-        Pipeline::default().evaluate_rec(ImportId(0), leak_file_info(src), &mut DummyImporter)
+        let (initial, initial_file_info, mut importer) = import_handler(src);
+        Pipeline::default().evaluate_rec(initial, initial_file_info, &mut importer)
     }
 
     #[track_caller]
@@ -634,7 +663,8 @@ fn importing() {
     parse_failure(r"import .");
     parse_failure(r"import @");
     validate_failure(r"import ./asd/asd");
-    validate_failure(r"import @/asd/asd");
-    validate_failure(r"import @/asd/asd/asd");
+    validate_failure(r"import @asd/asd");
+    validate_failure(r"import @asd/asd/asd");
     validate_failure(r"import ./.");
+    evaluate_check_type(r"import @std/prelude.fl .\x:{} x", "{}");
 }

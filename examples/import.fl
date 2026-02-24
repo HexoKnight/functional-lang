@@ -1,6 +1,7 @@
-import ./lib.fl .\{ some, map, }: {
+import @std/prelude.fl .\{ some, map, }: {
     some: [T] T -> enum { some: T },
     map: [T] enum { some: T, none: () } -> [U] (T -> U) -> enum { some: U, none: () },
 }
+import ./lib.fl .\{ hello }: { hello: (bool, ()) }
 
 (some false).map \x:bool ()

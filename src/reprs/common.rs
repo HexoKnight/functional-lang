@@ -42,6 +42,36 @@ impl<'i> Span<'i> {
     pub fn range(self) -> Range<usize> {
         self.start()..self.end()
     }
+
+    // for<> should help ensure that the result is a substring
+    pub fn map_text(&self, f: impl for<'t> FnOnce(&'t str) -> &'t str) -> Self {
+        Self {
+            text: f(self.text()),
+            file_info: self.file_info,
+        }
+        .debug_check_valid()
+    }
+
+    pub fn map_text_array<F, const N: usize>(&self, f: F) -> [Self; N]
+    where
+        F: for<'t> FnOnce(&'t str) -> [&'t str; N],
+    {
+        f(self.text()).map(|text| {
+            Self {
+                text,
+                file_info: self.file_info,
+            }
+            .debug_check_valid()
+        })
+    }
+
+    fn debug_check_valid(self) -> Self {
+        debug_assert!(
+            self.text.as_ptr().addr() >= self.file_info.text.as_ptr().addr()
+                && self.end() <= self.file_info.text.len()
+        );
+        self
+    }
 }
 
 /// Represents a 'file' or more specifically a source string and an identifying name
@@ -81,18 +111,6 @@ pub enum RawArgStructure<'i> {
 pub struct Label<'i>(pub &'i str);
 
 newtype_derive!([Label<'i>(&'i str)] Debug, Display);
-
-#[derive(Hash, Copy, Clone, Eq, PartialEq, Debug)]
-pub struct ImportId(pub usize);
-
-pub trait ImportResolver {
-    // type ImportId;
-    fn resolve(&mut self, current: ImportId, path: &str) -> Result<ImportId, String>;
-}
-
-pub trait Importer<'i>: ImportResolver {
-    fn read(&self, import_id: ImportId) -> Result<&'i FileInfo<'i>, String>;
-}
 
 /// de Bruijn index
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]

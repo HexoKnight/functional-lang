@@ -28,7 +28,7 @@ pub enum RawTerm<'i> {
 
     Var(Ident<'i>),
 
-    Import(FilePath<'i>),
+    Import(ImportPath<'i>),
 
     Enum(Option<Type<'i>>, Ident<'i>),
     Match(Option<Type<'i>>, Box<[(Ident<'i>, Term<'i>)]>),
@@ -56,12 +56,32 @@ pub struct TyBounds<'i> {
 }
 
 #[derive(Debug)]
-pub struct FilePath<'i>(pub Span<'i>);
+pub enum ImportPath<'i> {
+    Relative {
+        span: Span<'i>,
+    },
+    Package {
+        span: Span<'i>,
+        package: Span<'i>,
+        path: Span<'i>,
+    },
+}
 
-impl Eq for FilePath<'_> {}
-impl PartialEq for FilePath<'_> {
+impl Eq for ImportPath<'_> {}
+impl PartialEq for ImportPath<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.0.text() == other.0.text()
+        match (self, other) {
+            (ImportPath::Relative { span }, ImportPath::Relative { span: other_span }) => {
+                span.text() == other_span.text()
+            }
+            (
+                ImportPath::Package { span, .. },
+                ImportPath::Package {
+                    span: other_span, ..
+                },
+            ) => span.text() == other_span.text(),
+            _ => false,
+        }
     }
 }
 

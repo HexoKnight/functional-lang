@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use crate::{
     common::WithInfo,
-    reprs::common::{ArgStructure, Idx, ImportId, Label, Span},
+    importing::ImportId,
+    reprs::common::{ArgStructure, Idx, Label, Span},
 };
 
 pub type Term<'i> = WithInfo<Span<'i>, RawTerm<'i>>;

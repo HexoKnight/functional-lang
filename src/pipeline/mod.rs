@@ -7,10 +7,11 @@ use crate::{
     common::{WithInfo, toposort},
     error::CompilationError,
     evaluation::evaluate,
+    importing::{ImportId, Importer},
     parsing::{ParseError, Parser},
     reprs::{
         ast,
-        common::{FileInfo, ImportId, Importer, Span},
+        common::{FileInfo, Span},
         typed_ir, untyped_ir, value,
     },
     typing::type_check,
@@ -69,7 +70,7 @@ impl Pipeline {
                 .read(import_id)
                 .map_err(|err| ValidationError::FailedImport {
                     path,
-                    info: err.into(),
+                    info: err.into_msg().into(),
                     span,
                 })?;
 

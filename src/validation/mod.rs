@@ -4,8 +4,9 @@ use std::collections::HashMap;
 use itertools::Itertools;
 
 use crate::common::WithInfo;
+use crate::importing::{ImportError, ImportId, ImportResolver};
 use crate::reprs::ast;
-use crate::reprs::common::{ArgStructure, ImportId, ImportResolver, Label, RawArgStructure, Span};
+use crate::reprs::common::{ArgStructure, Label, RawArgStructure, Span};
 use crate::reprs::untyped_ir as ir;
 
 use self::context::{Context, ContextInner};
@@ -16,7 +17,10 @@ mod context {
 
     use derive_where::derive_where;
 
-    use crate::reprs::common::{Idx, ImportId, ImportResolver, Lvl, Span};
+    use crate::{
+        importing::{ImportError, ImportId, ImportResolver},
+        reprs::common::{Idx, Lvl, Span},
+    };
 
     /// Cheaply cloneable (hopefully) append-only stack
     type Stack<T> = Vec<T>;
@@ -83,15 +87,33 @@ mod context {
             Lvl::find(&self.ty_var_stack, |ty_var| *ty_var == name)
         }
 
-        pub(super) fn resolve_import(
+        pub(super) fn resolve_relative_import(
             &self,
             path: &'i str,
             span: Span<'i>,
-        ) -> Result<ImportId, String> {
+        ) -> Result<ImportId, ImportError> {
             let import_id = self
                 .import_resolver
                 .borrow_mut()
-                .resolve(self.inner.import_id, path)?;
+                .resolve_relative(self.inner.import_id, path)?;
+            self.inner
+                .imports_resolved
+                .borrow_mut()
+                .entry(import_id)
+                .or_insert((path, span));
+            Ok(import_id)
+        }
+
+        pub(super) fn resolve_package_import(
+            &self,
+            package: &'i str,
+            path: &'i str,
+            span: Span<'i>,
+        ) -> Result<ImportId, ImportError> {
+            let import_id = self
+                .import_resolver
+                .borrow_mut()
+                .resolve_package(package, path)?;
             self.inner
                 .imports_resolved
                 .borrow_mut()
@@ -286,16 +308,46 @@ impl<'i> Validate<'i> for ast::Term<'i> {
                 };
                 ir::RawTerm::Var(index)
             }
-            ast::RawTerm::Import(path) => ir::RawTerm::Import(WithInfo(
-                path.0,
-                ctx.resolve_import(path.0.text(), path.0).map_err(|err| {
-                    ValidationError::FailedImport {
-                        path: path.0.text(),
-                        info: err.into(),
-                        span: path.0,
-                    }
-                })?,
-            )),
+            ast::RawTerm::Import(path) => ir::RawTerm::Import(match path {
+                ast::ImportPath::Relative { span } => WithInfo(
+                    *span,
+                    ctx.resolve_relative_import(span.text(), *span)
+                        .map_err(|err| match err {
+                            ImportError::Path(msg) | ImportError::Package(msg) => {
+                                ValidationError::FailedImport {
+                                    path: span.text(),
+                                    info: msg.into(),
+                                    span: *span,
+                                }
+                            }
+                            ImportError::Other(msg) => ValidationError::FailedImport {
+                                path: span.text(),
+                                info: msg.into(),
+                                span: *info,
+                            },
+                        })?,
+                ),
+                ast::ImportPath::Package {
+                    span,
+                    package,
+                    path,
+                } => WithInfo(
+                    *path,
+                    ctx.resolve_package_import(package.text(), path.text(), *span)
+                        .map_err(|err| {
+                            let span = *match err {
+                                ImportError::Path(_) => path,
+                                ImportError::Package(_) => package,
+                                ImportError::Other(_) => span,
+                            };
+                            ValidationError::FailedImport {
+                                path: span.text(),
+                                info: err.into_msg().into(),
+                                span,
+                            }
+                        })?,
+                ),
+            }),
             ast::RawTerm::Enum(enum_type, variant) => {
                 ir::RawTerm::Enum(enum_type.validate(ctx)?, Label(variant.0.text()))
             }
