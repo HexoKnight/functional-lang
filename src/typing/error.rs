@@ -189,7 +189,7 @@ impl PlainContextError {
 impl ContextError<'_> {
     /// whether the error is internal
     /// (either indicates an internal bug or should not make it to the top level)
-    fn is_internal(&self) -> bool {
+    pub(super) fn is_internal(&self) -> bool {
         match self {
             ContextError::Illegal(_)
             | ContextError::NonTerminalTypeInference

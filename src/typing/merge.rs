@@ -45,12 +45,39 @@ fn merge<'a: 'inn, 'inn>(
         if ty_eq(ty1, ty2) {
             return Ok(ty1);
         }
-        // TODO(proper errors): catch specifically subtyping errors
-        if expect_type(ty1, ty2, join, TyConfig::ty_inference_disabled(), ctx).is_ok() {
-            return Ok(ty1);
+
+        fn ignore_noninternal_err<T>(
+            res: Result<T, ContextError>,
+        ) -> Result<Option<T>, ContextError> {
+            match res {
+                Ok(t) => Ok(Some(t)),
+                Err(error) => {
+                    if error.is_internal() {
+                        Err(error)
+                    } else {
+                        Ok(None)
+                    }
+                }
+            }
         }
-        if expect_type(ty1, ty2, !join, TyConfig::ty_inference_disabled(), ctx).is_ok() {
-            return Ok(ty2);
+
+        if let Some(ty) = ignore_noninternal_err(expect_type(
+            ty2,
+            ty1,
+            !join,
+            TyConfig::ty_inference_disabled(),
+            ctx,
+        ))? {
+            return Ok(ty);
+        }
+        if let Some(ty) = ignore_noninternal_err(expect_type(
+            ty1,
+            ty2,
+            !join,
+            TyConfig::ty_inference_disabled(),
+            ctx,
+        ))? {
+            return Ok(ty);
         }
 
         let op = if join { "join" } else { "meet" };
