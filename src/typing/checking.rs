@@ -4,7 +4,7 @@ use itertools::Itertools;
 use typed_arena::Arena;
 
 use crate::{
-    common::{WithInfo, maybe_zip_eq},
+    common::{ResultOption, WithInfo, maybe_zip_eq},
     importing::ImportId,
     reprs::{
         typed_ir::{self as tir},
@@ -345,107 +345,148 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                 arg: arg_term,
             } => {
                 let check_type = check_type.take();
-                let check_func = ctx.intern(Type::Arr {
-                    arg: ctx.ty_unknown(),
-                    result: check_type.unwrap_or(ctx.ty_unknown()),
-                });
 
                 // try infer but fall back if it fails
-                let (func_term, func) = func_term
+                if let Some((func_term, func)) = func_term
                     .type_check(
-                        Some(check_func),
+                        Some(ctx.intern(Type::Arr {
+                            arg: ctx.ty_unknown(),
+                            result: check_type.unwrap_or(ctx.ty_unknown()),
+                        })),
                         ty_config.infer_ty_args(true).ty_infer_fail(true),
                         ctx,
                     )
-                    .or_else(|err| {
-                        if let TypeCheckError::NonTerminalTypeInference = err {
-                            func_term.type_check(None, ty_config.infer_ty_args(false), ctx)
-                        } else {
-                            Err(err)
-                        }
-                    })?;
+                    .catch_type_inference_error()
+                    .some_or(|| {
+                        func_term
+                            .type_check(
+                                None,
+                                ty_config.infer_ty_args(false).ty_infer_fail(true),
+                                ctx,
+                            )
+                            .catch_type_inference_error()
+                    })?
+                {
+                    match func.upper_concrete(ctx)? {
+                        Type::Arr {
+                            arg: func_arg,
+                            result,
+                        } => {
+                            let (arg_term, arg) = arg_term.type_check(
+                                Some(func_arg),
+                                ty_config.infer_ty_args(true),
+                                ctx,
+                            )?;
 
-                match func.upper_concrete(ctx)? {
-                    Type::Arr {
-                        arg: func_arg,
-                        result,
-                    } => {
-                        let (arg_term, arg) = arg_term.type_check(
-                            Some(func_arg),
-                            ty_config.infer_ty_args(true),
-                            ctx,
-                        )?;
-
-                        // `type_check` should always return a
-                        // subtype of `check_type` (ie. `func_arg`)
-                        #[cfg(debug_assertions)]
-                        expect_type(func_arg, arg, true, ty_config.infer_ty_args(false), ctx)
-                            .try_wrap_error(|| {
+                            // `type_check` should always return a
+                            // subtype of `check_type` (ie. `func_arg`)
+                            #[cfg(debug_assertions)]
+                            expect_type(func_arg, arg, true, ty_config.infer_ty_args(false), ctx)
+                                .try_wrap_error(|| {
                                 Ok(IllegalError::new(
                                     "`type_check` result is not subtype of `check_type`",
                                     None,
                                 ))
                             })?;
 
-                        (
-                            tir::RawTerm::App {
-                                func: func_term,
-                                arg: arg_term,
-                            },
-                            *result,
-                        )
-                    }
-                    ty_abs @ Type::TyAbs { .. } => {
-                        // TODO: maybe try pass some check info into this
-                        let (arg_term, arg) =
-                            arg_term.type_check(None, ty_config.infer_ty_args(false), ctx)?;
+                            (
+                                tir::RawTerm::App {
+                                    func: func_term,
+                                    arg: arg_term,
+                                },
+                                *result,
+                            )
+                        }
+                        ty_abs @ Type::TyAbs { .. } => {
+                            // TODO: maybe try pass some check info into this
+                            let (arg_term, arg) =
+                                arg_term.type_check(None, ty_config.infer_ty_args(false), ctx)?;
 
-                        let check_func = ctx.intern(Type::Arr {
+                            let check_func = ctx.intern(Type::Arr {
+                                arg,
+                                result: check_type.unwrap_or(ctx.ty_unknown()),
+                            });
+                            let inferred_func = expect_type(
+                                check_func,
+                                ty_abs,
+                                true,
+                                ty_config.infer_ty_args(true),
+                                ctx,
+                            )
+                            .try_wrap_error(|| {
+                                Ok(SpannedError::ty_ty_mismatch(
+                                    check_func.display(ctx)?,
+                                    ty_abs.display(ctx)?,
+                                    *info,
+                                ))
+                            })?;
+
+                            let Type::Arr {
+                                arg: _,
+                                result: inferred_result,
+                            } = inferred_func
+                            else {
+                                Err(IllegalError::new(
+                                    "`expect_type` result is not subtype of `expected`",
+                                    None,
+                                ))?
+                            };
+                            (
+                                tir::RawTerm::App {
+                                    func: func_term,
+                                    arg: arg_term,
+                                },
+                                *inferred_result,
+                            )
+                        }
+                        _ => Err(SpannedError::ty_ty_mismatch(
+                            Type::Arr {
+                                arg: &Type::Unknown,
+                                result: check_type.unwrap_or(&Type::Unknown),
+                            }
+                            .display(ctx)?,
+                            func.display(ctx)?,
+                            *info,
+                        ))?,
+                    }
+                } else {
+                    let (arg_term, arg) = arg_term.type_check(None, ty_config, ctx)?;
+                    let (func_term, func) = func_term.type_check(
+                        Some(ctx.intern(Type::Arr {
                             arg,
                             result: check_type.unwrap_or(ctx.ty_unknown()),
-                        });
-                        let inferred_func = expect_type(
-                            check_func,
-                            ty_abs,
-                            true,
-                            ty_config.infer_ty_args(true),
-                            ctx,
-                        )
+                        })),
+                        ty_config.infer_ty_args(true),
+                        ctx,
+                    )?;
+
+                    let Type::Arr {
+                        arg: func_arg,
+                        result,
+                    } = func
+                    else {
+                        Err(IllegalError::new(
+                            "`type_check` result is not subtype of `check_type`",
+                            None,
+                        ))?
+                    };
+
+                    #[cfg(debug_assertions)]
+                    expect_type(func_arg, arg, true, ty_config.infer_ty_args(false), ctx)
                         .try_wrap_error(|| {
-                            Ok(SpannedError::ty_ty_mismatch(
-                                check_func.display(ctx)?,
-                                ty_abs.display(ctx)?,
-                                *info,
+                            Ok(IllegalError::new(
+                                "`type_check` result is not subtype of `check_type`",
+                                None,
                             ))
                         })?;
 
-                        let Type::Arr {
-                            arg: _,
-                            result: inferred_result,
-                        } = inferred_func
-                        else {
-                            Err(IllegalError::new(
-                                "`expect_type` result is not subtype of `expected`",
-                                None,
-                            ))?
-                        };
-                        (
-                            tir::RawTerm::App {
-                                func: func_term,
-                                arg: arg_term,
-                            },
-                            *inferred_result,
-                        )
-                    }
-                    _ => Err(SpannedError::ty_ty_mismatch(
-                        Type::Arr {
-                            arg: &Type::Unknown,
-                            result: check_type.unwrap_or(&Type::Unknown),
-                        }
-                        .display(ctx)?,
-                        func.display(ctx)?,
-                        *info,
-                    ))?,
+                    (
+                        tir::RawTerm::App {
+                            func: func_term,
+                            arg: arg_term,
+                        },
+                        *result,
+                    )
                 }
             }
             uir::RawTerm::TyAbs { name, bounds, body } => {

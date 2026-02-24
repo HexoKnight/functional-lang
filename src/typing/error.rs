@@ -318,6 +318,10 @@ impl<'i> ContextError<'i> {
     }
 }
 
+pub(super) trait TypeInferenceFailableError: Sized {
+    fn ignore_type_inference_error(self) -> Option<Self>;
+}
+
 pub(super) trait TypeCheckResult<T, E>: Sized {
     fn to_result(self) -> Result<T, E>;
 
@@ -337,6 +341,30 @@ pub(super) trait TypeCheckResult<T, E>: Sized {
     {
         self.to_result()
             .map_err(|prev_err| WrapError::wrap(prev_err, f()))
+    }
+
+    fn catch_type_inference_error(self) -> Result<Option<T>, E>
+    where
+        E: TypeInferenceFailableError,
+    {
+        match self
+            .to_result()
+            .map_err(TypeInferenceFailableError::ignore_type_inference_error)
+        {
+            Ok(t) => Ok(Some(t)),
+            Err(Some(e)) => Err(e),
+            Err(None) => Ok(None),
+        }
+    }
+}
+
+impl TypeInferenceFailableError for TypeCheckError<'_> {
+    fn ignore_type_inference_error(self) -> Option<Self> {
+        if let TypeCheckError::NonTerminalTypeInference = self {
+            None
+        } else {
+            Some(self)
+        }
     }
 }
 

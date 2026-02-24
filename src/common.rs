@@ -149,3 +149,17 @@ fn test_toposort() {
         Err((vec!["C", "ASDASD"], "A"))
     );
 }
+
+pub(crate) trait ResultOption: Sized {
+    fn some_or(self, f: impl FnOnce() -> Self) -> Self;
+}
+
+impl<T, E> ResultOption for Result<Option<T>, E> {
+    fn some_or(self, f: impl FnOnce() -> Self) -> Self {
+        match self {
+            Ok(Some(_)) => self,
+            Err(_) => self,
+            Ok(None) => f(),
+        }
+    }
+}

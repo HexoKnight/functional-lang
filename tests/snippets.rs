@@ -507,6 +507,8 @@ fn type_inference() {
     evaluate_check_type(r"(\e e.match {}) .\x:enum{} -> bool x", "enum {} -> bool");
     evaluate_check_type(r"match {} .\x:enum{} -> bool x", "enum {} -> bool");
 
+    evaluate_check_type(r"match {} .\x x", "enum {} -> !");
+
     evaluate_check_type(r"enum wrap .\x:bool->_ x", "bool -> _");
 
     type_check_failure(r"enum wrap .\x x");
@@ -522,11 +524,11 @@ fn type_inference() {
             op (enum a ())
         )
         (\e
-            (\() ()).
-                \id:()->()
+            (\():() ()).
+                \id
 
             (e.match {a id, b id}).
-                \():()
+                \()
 
             e.match {a id, b id, c id}
         )",
@@ -534,8 +536,8 @@ fn type_inference() {
     );
     evaluate_check_type(
         r"
-        (\() ()). \id:()->()
-        (\op: enum {a:(), b:()} -> ()
+        (\():() ()). \id
+        (\op
             op (enum a ())
         )
         match: enum{a:(),b:(),c:()} {a id, b id, c id}",
@@ -543,7 +545,7 @@ fn type_inference() {
     );
     type_check_failure(
         r"
-        (\() ()). \id:()->()
+        (\():() ()). \id
         (\op: enum {a:(), b:()} -> ()
             op (enum a ())
         )
@@ -554,13 +556,10 @@ fn type_inference() {
 #[test]
 fn type_arg_inference() {
     evaluate_eq(
-        r"(?A \a a) .\id:[A]A->A \b:bool id [bool] b",
-        r"(?A \a a) .\id:[A]A->A \b:bool id        b",
+        r"(?A \a:A a) .\id \b:bool id [bool] b",
+        r"(?A \a:A a) .\id \b:bool id        b",
     );
-    evaluate_check_type(
-        r"(?A \a a) .\id:[A]A->A \b:bool id        b",
-        "bool -> bool",
-    );
+    evaluate_check_type(r"(?A \a:A a) .\id \b:bool id b", "bool -> bool");
 
     evaluate_check_type(r"\id:[A]A->A id true", "([A] A -> A) -> bool");
     evaluate_check_type(r"\x:bool \id:[A]A->A id x", "bool -> ([A] A -> A) -> bool");
@@ -596,8 +595,8 @@ fn type_arg_inference() {
         r"
         ?T ?R \f
             match {
-                some(\t enum some (f t)),
-                none enum none,
+                some \t enum some (f t),
+                none    enum none,
             }
         ",
     );
@@ -624,15 +623,14 @@ fn type_arg_inference() {
     );
 
     evaluate_check_type(
-        r"(?T \t t).\id:[T]T->T match {wrap id [bool]}",
+        r"(?T \t:T t).\id match {wrap id [bool]}",
         "enum {wrap: bool} -> bool",
     );
     evaluate_check_type(
-        r"(?T \t t).\id:[T]T->T match {wrap id} .\x:enum{wrap:bool}->bool x",
+        r"(?T \t:T t).\id match {wrap id} .\x:enum{wrap:bool}->bool x",
         "enum {wrap: bool} -> bool",
     );
-    // inference is very local currently (app <-> match <-> id is 2 separations)
-    type_check_failure(r"(?T \t t).\id:[T]T->T match {wrap id} (enum wrap true)");
+    evaluate_check_type(r"(?T \t:T t).\id match {wrap id} (enum wrap true)", "bool");
 
     evaluate_check_type(r" (?T ?R >T \t:T t.\r:R r) true", "_");
     evaluate_check_type(r"((?T ?R >T \t:T t.\r:R r) true) .\x:bool x", "bool");
@@ -647,7 +645,6 @@ fn type_arg_inference() {
     );
     evaluate_check_type(r"(?T ?R >T \r:R r)[bool] true", "bool");
 
-    // limitation of current contravariant type arg inference
     evaluate_check_type(
         r"\id: [T][R>T] R -> R id[!] true",
         "([T] [R >T] R -> R) -> bool",
@@ -667,4 +664,9 @@ fn importing() {
     validate_failure(r"import @asd/asd/asd");
     validate_failure(r"import ./.");
     evaluate_check_type(r"import @std/prelude.fl .\x:{} x", "{}");
+
+    evaluate_check_type(
+        r"import @std/prelude.fl .\{some, map} map (some true) (\b:bool ())",
+        "enum {none: (), some: ()}",
+    );
 }

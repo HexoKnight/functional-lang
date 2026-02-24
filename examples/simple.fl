@@ -9,14 +9,14 @@
 // so 'let var: ty = val; ...'
 // becomes '(val) . \var: ty ...'
 
-(?A ?B ?C \f
-  \(a, b)
+(?A ?B ?C \f: A -> B -> C
+  \(a, b): (A, B)
     f a b
 ).
-  \uncurry: [A] [B] [C] (A -> B -> C) -> ((A, B) -> C)
+  \uncurry
 
-(?T \x \() x).
-  \K: [T] T -> () -> T
+(?T \x:T \():() x).
+  \K
 
 {
     a: (K [bool]).uncurry (K true (), ()),
