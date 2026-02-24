@@ -15,7 +15,7 @@ use crate::{
         typed_ir, untyped_ir, value,
     },
     typing::type_check,
-    validation::{ValidationError, validate},
+    validation::{ImportTermInfo, ValidationError, validate},
 };
 
 #[derive(Default)]
@@ -49,9 +49,12 @@ impl Pipeline {
 
                 validated.insert(import_id, untyped_ir);
                 // `VecDeque::extend` pushes to the back
-                to_validate.extend(dependencies.iter().filter_map(|(import_id, (path, span))| {
-                    (!validated.contains_key(import_id)).then_some((*import_id, (*path, *span)))
-                }));
+                to_validate.extend(dependencies.iter().filter_map(
+                    |(import_id, import_term_info)| {
+                        (!validated.contains_key(import_id))
+                            .then_some((*import_id, *import_term_info))
+                    },
+                ));
 
                 dependency_graph.insert(
                     import_id,
@@ -65,7 +68,7 @@ impl Pipeline {
 
         handle_source(initial, initial_file_info, &mut to_validate, importer)?;
 
-        while let Some((import_id, (path, span))) = to_validate.pop_front() {
+        while let Some((import_id, ImportTermInfo { path, span })) = to_validate.pop_front() {
             let source = importer
                 .read(import_id)
                 .map_err(|err| ValidationError::FailedImport {
@@ -79,7 +82,13 @@ impl Pipeline {
 
         // we use `WithInfo` so nodes ignore the info when `Eq`
         // dummy span but this initial_node should never end up in the Err(cycle)
-        let initial_node = WithInfo(("", Span::new(initial_file_info, 0..0)), initial);
+        let initial_node = WithInfo(
+            ImportTermInfo {
+                path: "",
+                span: Span::new(initial_file_info, 0..0),
+            },
+            initial,
+        );
         let sorted = match toposort(&initial_node, |WithInfo(_, import_id)| {
             dependency_graph
                 .get(import_id)

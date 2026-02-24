@@ -20,6 +20,7 @@ mod context {
     use crate::{
         importing::{ImportError, ImportId, ImportResolver},
         reprs::common::{Idx, Lvl, Span},
+        validation::ImportTermInfo,
     };
 
     /// Cheaply cloneable (hopefully) append-only stack
@@ -27,7 +28,7 @@ mod context {
 
     pub(super) struct ContextInner<'i> {
         import_id: ImportId,
-        imports_resolved: RefCell<HashMap<ImportId, (&'i str, Span<'i>)>>,
+        imports_resolved: RefCell<HashMap<ImportId, ImportTermInfo<'i>>>,
     }
 
     impl<'i> ContextInner<'i> {
@@ -38,7 +39,7 @@ mod context {
             }
         }
 
-        pub(super) fn into_imports_resolved(self) -> HashMap<ImportId, (&'i str, Span<'i>)> {
+        pub(super) fn into_imports_resolved(self) -> HashMap<ImportId, ImportTermInfo<'i>> {
             self.imports_resolved.into_inner()
         }
     }
@@ -100,7 +101,7 @@ mod context {
                 .imports_resolved
                 .borrow_mut()
                 .entry(import_id)
-                .or_insert((path, span));
+                .or_insert(ImportTermInfo { path, span });
             Ok(import_id)
         }
 
@@ -118,7 +119,7 @@ mod context {
                 .imports_resolved
                 .borrow_mut()
                 .entry(import_id)
-                .or_insert((path, span));
+                .or_insert(ImportTermInfo { path, span });
             Ok(import_id)
         }
     }
@@ -129,7 +130,7 @@ mod error {
 
     use annotate_snippets::{AnnotationKind, Group, Level};
 
-    use crate::{error::RenderError, reprs::common::Span};
+    use crate::{error::RenderError, reprs::common::Span, validation::ImportTermInfo};
 
     pub enum ValidationError<'i> {
         VarNotFound {
@@ -148,8 +149,8 @@ mod error {
             span: Span<'i>,
         },
         CyclicImport {
-            cycle: Box<[(&'i str, Span<'i>)]>,
-            last: (&'i str, Span<'i>),
+            cycle: Box<[ImportTermInfo<'i>]>,
+            last: ImportTermInfo<'i>,
         },
     }
 
@@ -199,10 +200,14 @@ mod error {
                     }),
                 ValidationError::CyclicImport {
                     cycle,
-                    last: (last_path, last_span),
+                    last:
+                        ImportTermInfo {
+                            path: last_path,
+                            span: last_span,
+                        },
                 } => Level::ERROR
                     .primary_title("cyclic import detected".to_string())
-                    .elements(cycle.iter().map(|(path, span)| {
+                    .elements(cycle.iter().map(|ImportTermInfo { path, span }| {
                         span.snippet().annotation(
                             span.annotation(AnnotationKind::Primary)
                                 .label(format!("while importing '{path}'...")),
@@ -222,6 +227,12 @@ mod error {
 
 type Result<'i, T> = std::result::Result<T, ValidationError<'i>>;
 
+#[derive(Copy, Clone)]
+pub struct ImportTermInfo<'i> {
+    pub path: &'i str,
+    pub span: Span<'i>,
+}
+
 /// Takes an [`ast::Term`] and checks that it is 'valid', returning an
 /// [`untyped_ir::Term`][ir::Term], which contains this encoded information
 /// Also resolves any imports and returns them.
@@ -237,7 +248,7 @@ pub fn validate<'i>(
     import_id: ImportId,
     ast: &ast::Term<'i>,
     import_resolver: &mut impl ImportResolver,
-) -> Result<'i, (ir::Term<'i>, HashMap<ImportId, (&'i str, Span<'i>)>)> {
+) -> Result<'i, (ir::Term<'i>, HashMap<ImportId, ImportTermInfo<'i>>)> {
     let inner = ContextInner::new(import_id);
     let import_resolver = RefCell::new(import_resolver);
     let ctx = Context::new(&inner, &import_resolver);
