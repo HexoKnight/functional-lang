@@ -79,7 +79,7 @@ mod context {
             }
             debug_assert!(current_ty_var_level.deeper_than(ty_var_level));
 
-            Some(var_ty.map_ty_vars(
+            Some(var_ty.map_ty_vars_no_level(
                 |level| {
                     let level = if level.deeper_than(ty_var_level) {
                         level.translate(ty_var_level, current_ty_var_level).expect(

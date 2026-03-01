@@ -443,6 +443,8 @@ fn ty_app() {
 
     type_check_failure(r"(?T>enum{} \x:T x) [()]");
 
+    evaluate_check_type(r"(?A ?B \a:A ())[[C] C]", "[B] ([C] C) -> ()");
+
     type_check_eq(
         r"(?T \x:T x) .\id: [T] T -> T id",
         r"(?A \a:A a) .\id: [T] T -> T id",

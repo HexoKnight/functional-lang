@@ -303,7 +303,7 @@ mod inference {
                 level: Lvl,
                 ctx: &Context<'a, '_>,
             ) -> Result<InternedType<'a>, IllegalError<'static>> {
-                ty.try_map_ty_vars::<IllegalError<'static>>(
+                ty.try_map_ty_vars_no_level::<IllegalError<'static>>(
                     &mut |level_expected| {
                         // we convert from the expected stack to the found stack
                         let level_found = ctx.map_expected_level(level_expected)?;

@@ -140,7 +140,8 @@ impl<'a> Type<'a> {
 
     fn try_map_ty_vars<E>(
         &'a self,
-        f: &mut impl FnMut(Lvl) -> Result<&'a Self, E>,
+        f: &mut impl FnMut(Lvl, Lvl) -> Result<&'a Self, E>,
+        level: Lvl,
         ctx: &impl TyArenaContext<'a>,
     ) -> Result<&'a Self, E> {
         let ty = match self {
@@ -151,34 +152,38 @@ impl<'a> Type<'a> {
             } => Type::TyAbs {
                 name,
                 bounds: TyBounds {
-                    upper: upper.map(|t| t.try_map_ty_vars(f, ctx)).transpose()?,
-                    lower: lower.map(|t| t.try_map_ty_vars(f, ctx)).transpose()?,
+                    upper: upper
+                        .map(|t| t.try_map_ty_vars(f, level, ctx))
+                        .transpose()?,
+                    lower: lower
+                        .map(|t| t.try_map_ty_vars(f, level, ctx))
+                        .transpose()?,
                 },
-                result: result.try_map_ty_vars(f, ctx)?,
+                result: result.try_map_ty_vars(f, level.deeper(), ctx)?,
             },
-            Type::TyVar(level) => return f(*level),
+            Type::TyVar(ty_level) => return f(*ty_level, level),
             Type::Arr { arg, result } => Type::Arr {
-                arg: arg.try_map_ty_vars(f, ctx)?,
-                result: result.try_map_ty_vars(f, ctx)?,
+                arg: arg.try_map_ty_vars(f, level, ctx)?,
+                result: result.try_map_ty_vars(f, level, ctx)?,
             },
             Type::Enum(variants) => Type::Enum(
                 variants
                     .0
                     .iter()
-                    .map(|(l, t)| t.try_map_ty_vars(f, ctx).map(|t| (*l, t)))
+                    .map(|(l, t)| t.try_map_ty_vars(f, level, ctx).map(|t| (*l, t)))
                     .try_collect()?,
             ),
             Type::Record(fields) => Type::Record(
                 fields
                     .0
                     .iter()
-                    .map(|(l, t)| t.try_map_ty_vars(f, ctx).map(|t| (*l, t)))
+                    .map(|(l, t)| t.try_map_ty_vars(f, level, ctx).map(|t| (*l, t)))
                     .try_collect()?,
             ),
             Type::Tuple(elems) => Type::Tuple(
                 elems
                     .iter()
-                    .map(|e| e.try_map_ty_vars(f, ctx))
+                    .map(|e| e.try_map_ty_vars(f, level, ctx))
                     .try_collect()?,
             ),
             Type::Bool | Type::Any | Type::Never | Type::Unknown => return Ok(self),
@@ -189,11 +194,28 @@ impl<'a> Type<'a> {
 
     fn map_ty_vars(
         &'a self,
+        mut f: impl FnMut(Lvl, Lvl) -> &'a Self,
+        level: Lvl,
+        ctx: &impl TyArenaContext<'a>,
+    ) -> &'a Self {
+        let Ok(res) =
+            self.try_map_ty_vars(&mut |ty_l, l| Ok::<_, Infallible>(f(ty_l, l)), level, ctx);
+        res
+    }
+
+    fn try_map_ty_vars_no_level<E>(
+        &'a self,
+        mut f: impl FnMut(Lvl) -> Result<&'a Self, E>,
+        ctx: &impl TyArenaContext<'a>,
+    ) -> Result<&'a Self, E> {
+        self.try_map_ty_vars(&mut |l, _| f(l), Lvl::get_depth(&[(); 0]), ctx)
+    }
+    fn map_ty_vars_no_level(
+        &'a self,
         mut f: impl FnMut(Lvl) -> &'a Self,
         ctx: &impl TyArenaContext<'a>,
     ) -> &'a Self {
-        let Ok(res) = self.try_map_ty_vars(&mut |l| Ok::<_, Infallible>(f(l)), ctx);
-        res
+        self.map_ty_vars(&mut |l, _| f(l), Lvl::get_depth(&[(); 0]), ctx)
     }
 
     fn substitute_ty_var(
@@ -203,20 +225,37 @@ impl<'a> Type<'a> {
         ctx: &impl TyArenaContext<'a>,
     ) -> &'a Self {
         self.map_ty_vars(
-            |level| {
-                if level == depth {
-                    return ty;
+            |ty_level, level| {
+                if ty_level == depth {
+                    return if depth == level {
+                        // no substitution necessary
+                        ty
+                    } else {
+                        ty.map_ty_vars(
+                            |inner_ty_level, _inner_level| {
+                                ctx.intern(Type::TyVar(
+                                    // depth <= level
+                                    inner_ty_level
+                                        .translate(depth, level)
+                                        .expect("level within map_ty_vars is never shallower than the level passed in"),
+                                ))
+                            },
+                            level,
+                            ctx,
+                        )
+                    };
                 }
-                let new_level = match level.shallower() {
+                let new_level = match ty_level.shallower() {
                     // deeper than replaced but not equal (due to prev arm)
-                    Some(shallower) if level.deeper_than(depth) => shallower,
+                    Some(shallower) if ty_level.deeper_than(depth) => shallower,
                     // either:
                     // - shallowest so could not be strictly deeper
                     // - not deeper
-                    None | Some(_) => level,
+                    None | Some(_) => ty_level,
                 };
                 ctx.intern(Type::TyVar(new_level))
             },
+            depth,
             ctx,
         )
     }
