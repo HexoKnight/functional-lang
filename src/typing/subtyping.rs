@@ -1,14 +1,14 @@
 use itertools::{Itertools, zip_eq};
 
 use crate::typing::{
-    InternedType, TyConfig,
+    InternedType, TyConfig, TyVar,
     context::{ContextInner, TyArenaContext, TyVarContext},
     error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
     ty::{TyBounds, TyDisplay, Type},
     ty_eq,
 };
 
-use self::{context::Context, inference::TyVar};
+use self::{context::Context, inference::InferenceTyVar};
 
 #[macro_use]
 mod context {
@@ -17,9 +17,10 @@ mod context {
     use crate::{
         reprs::common::Lvl,
         typing::{
+            TyVar,
             context::{ContextInner, Stack, TyArenaContext, TyVarContext, TyVarStack},
             error::IllegalError,
-            subtyping::inference::{TyConstraint, TyVar},
+            subtyping::inference::{InferenceTyVar, TyConstraint},
             ty::TyBounds,
         },
     };
@@ -31,7 +32,7 @@ mod context {
         };
         ($a:lifetime, $inn:lifetime) => {
              impl TyArenaContext<$a, Inner = &$inn ContextInner<$a>>
-                + TyVarContext<$a, TyVar = TyBounds<$a>>
+                + TyVarContext<$a, TyVar = TyVar<$a>>
         };
     }
 
@@ -41,8 +42,8 @@ mod context {
         inner: &'inn ContextInner<'a>,
 
         orignial_stack_depth: Lvl,
-        expected_ty_var_stack: Stack<(&'a str, TyVar<'a>)>,
-        found_ty_var_stack: Stack<(&'a str, TyVar<'a>)>,
+        expected_ty_var_stack: Stack<(&'a str, InferenceTyVar<'a>)>,
+        found_ty_var_stack: Stack<(&'a str, InferenceTyVar<'a>)>,
 
         /// maps `expected_..` levels to `found_..` `TyVar::Unbound` levels
         unbound_map: HashMap<Lvl, Lvl>,
@@ -52,7 +53,7 @@ mod context {
         pub(super) fn from(ctx: &ctx!()) -> Self {
             let ty_var_stack: Vec<_> = ctx
                 .get_ty_vars()
-                .map(|(name, ty_var)| (name, TyVar::Unbound(ty_var)))
+                .map(|(name, ty_var)| (name, InferenceTyVar::TyVar(ty_var)))
                 .collect();
             Self {
                 inner: ctx.get_inner(),
@@ -73,11 +74,11 @@ mod context {
     }
 
     impl<'a> Context<'a, '_> {
-        pub(super) fn push_unbound_ty_var(
+        pub(super) fn push_ty_var(
             &self,
             ty_var_name_expected: &'a str,
             ty_var_name_found: &'a str,
-            ty_var: TyBounds<'a>,
+            ty_var: TyVar<'a>,
         ) -> Self {
             let mut new = self.clone();
 
@@ -85,9 +86,9 @@ mod context {
             let found_level = Lvl::get_depth(&new.found_ty_var_stack);
 
             new.expected_ty_var_stack
-                .push((ty_var_name_expected, TyVar::Unbound(ty_var)));
+                .push((ty_var_name_expected, InferenceTyVar::TyVar(ty_var)));
             new.found_ty_var_stack
-                .push((ty_var_name_found, TyVar::Unbound(ty_var)));
+                .push((ty_var_name_found, InferenceTyVar::TyVar(ty_var)));
             new.unbound_map.insert(expected_level, found_level);
             new
         }
@@ -102,7 +103,7 @@ mod context {
             let mut new = self.clone();
 
             new.found_ty_var_stack
-                .push((ty_var_name, TyVar::Inferred(constraint.clone())));
+                .push((ty_var_name, InferenceTyVar::Inferred(constraint.clone())));
 
             (new, constraint)
         }
@@ -135,13 +136,19 @@ mod context {
             }
         }
 
-        pub(super) fn get_expected_ty_var(&self, level: Lvl) -> Option<(&'a str, &TyVar<'a>)> {
+        pub(super) fn get_expected_ty_var(
+            &self,
+            level: Lvl,
+        ) -> Option<(&'a str, &InferenceTyVar<'a>)> {
             level
                 .get(&self.expected_ty_var_stack)
                 .map(|(name, ty_var)| (*name, ty_var))
         }
 
-        pub(super) fn get_found_ty_var(&self, level: Lvl) -> Option<(&'a str, &TyVar<'a>)> {
+        pub(super) fn get_found_ty_var(
+            &self,
+            level: Lvl,
+        ) -> Option<(&'a str, &InferenceTyVar<'a>)> {
             level
                 .get(&self.found_ty_var_stack)
                 .map(|(name, ty_var)| (*name, ty_var))
@@ -151,7 +158,7 @@ mod context {
         pub(super) fn get_expected_ty_var_unwrap(
             &self,
             level: Lvl,
-        ) -> Result<(&'a str, &TyVar<'a>), IllegalError<'static>> {
+        ) -> Result<(&'a str, &InferenceTyVar<'a>), IllegalError<'static>> {
             // explicit match to allow `#[track_caller]`
             match self.get_expected_ty_var(level) {
                 Some(ty_var) => Ok(ty_var),
@@ -166,7 +173,7 @@ mod context {
         pub(super) fn get_found_ty_var_unwrap(
             &self,
             level: Lvl,
-        ) -> Result<(&'a str, &TyVar<'a>), IllegalError<'static>> {
+        ) -> Result<(&'a str, &InferenceTyVar<'a>), IllegalError<'static>> {
             // explicit match to allow `#[track_caller]`
             match self.get_found_ty_var(level) {
                 Some(ty_var) => Ok(ty_var),
@@ -195,10 +202,10 @@ mod context {
                 .collect()
         }
 
-        pub(super) fn fnd_ctx_without_inferred(&self) -> TyVarStack<'a, TyBounds<'a>> {
+        pub(super) fn fnd_ctx_without_inferred(&self) -> TyVarStack<'a, TyVar<'a>> {
             self.found_ty_var_stack
                 .iter()
-                .map(|(name, ty_var)| (*name, ty_var.get_bounds()))
+                .map(|(name, ty_var)| (*name, ty_var.without_inferred()))
                 .collect()
         }
 
@@ -222,12 +229,12 @@ mod context {
 }
 
 mod inference {
-    use std::{cell::RefCell, iter::Sum, rc::Rc};
+    use std::{cell::RefCell, rc::Rc};
 
     use crate::{
         reprs::common::Lvl,
         typing::{
-            InternedType, TyConfig,
+            InternedType, TyConfig, TyVar, Variance,
             context::{MultiContext, TyArenaContext},
             error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
             merge::{join, meet},
@@ -238,16 +245,16 @@ mod inference {
     };
 
     #[derive(Clone)]
-    pub(super) enum TyVar<'a> {
-        Unbound(TyBounds<'a>),
+    pub(super) enum InferenceTyVar<'a> {
+        TyVar(TyVar<'a>),
         Inferred(TyConstraint<'a>),
     }
 
-    impl<'a> TyVar<'a> {
-        pub(super) fn get_bounds(&self) -> TyBounds<'a> {
+    impl<'a> InferenceTyVar<'a> {
+        pub(super) fn without_inferred(&self) -> TyVar<'a> {
             match self {
-                TyVar::Unbound(bounds) => *bounds,
-                TyVar::Inferred(constraint) => constraint.initial_bounds(),
+                InferenceTyVar::TyVar(ty_var) => *ty_var,
+                InferenceTyVar::Inferred(constraint) => TyVar::Bounded(constraint.initial_bounds()),
             }
         }
     }
@@ -307,13 +314,16 @@ mod inference {
                     &mut |level_expected| {
                         // we convert from the expected stack to the found stack
                         let level_found = ctx.map_expected_level(level_expected)?;
-                        if level_found.deeper_than(level) {
-                            // replace any ty_vars bound more recently than the current (inclusive)
-                            // with their upper/lower bound
+                        if level_found.deeper_than(level)
+                            // replace any bounded/inferred ty_vars bound more recently than the
+                            // current (inclusive) with their upper/lower bound
                             // this weakens our inferencing ability but prevents cyclic bounds that
                             // we currently can't deal with
-                            let (_, found) = ctx.get_found_ty_var_unwrap(level_found)?;
-                            Ok(get_bound(found.get_bounds()))
+                            && let (_, found) = ctx.get_found_ty_var_unwrap(level_found)?
+                            // `Inferred` are converted to `Bounded` so this catches both
+                            && let TyVar::Bounded(bounds) = found.without_inferred()
+                        {
+                            Ok(get_bound(bounds))
                         } else {
                             Ok(ctx.intern(Type::TyVar(level_found)))
                         }
@@ -482,87 +492,7 @@ mod inference {
         }
     }
 
-    #[derive(Copy, Clone)]
-    pub(super) enum Variance {
-        Constant,
-        Covariant,
-        Contravariant,
-        Invariant,
-    }
-
-    impl Variance {
-        fn invert(self) -> Self {
-            match self {
-                Self::Constant | Self::Invariant => self,
-                Self::Covariant => Self::Contravariant,
-                Self::Contravariant => Self::Covariant,
-            }
-        }
-
-        fn add(self, other: Self) -> Self {
-            match (self, other) {
-                (Self::Constant, other) | (other, Self::Constant) => other,
-                (Self::Covariant, Self::Covariant) => Self::Covariant,
-                (Self::Contravariant, Self::Contravariant) => Self::Contravariant,
-                (Self::Covariant, Self::Contravariant)
-                | (Self::Contravariant, Self::Covariant)
-                | (Self::Invariant, _)
-                | (_, Self::Invariant) => Self::Invariant,
-            }
-        }
-    }
-    impl Sum<Self> for Variance {
-        fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-            iter.fold(Self::Constant, Self::add)
-        }
-    }
-
     impl<'a> Type<'a> {
-        pub(super) fn get_variance_of(&self, ty_var_level: Lvl) -> Variance {
-            match self {
-                Type::TyAbs {
-                    name: _,
-                    bounds: TyBounds { upper, lower },
-                    result,
-                } => [
-                    upper
-                        .map(|t| t.get_variance_of(ty_var_level).invert())
-                        .unwrap_or(Variance::Constant),
-                    lower
-                        .map(|t| t.get_variance_of(ty_var_level))
-                        .unwrap_or(Variance::Constant),
-                    result.get_variance_of(ty_var_level),
-                ]
-                .into_iter()
-                .sum(),
-                Type::TyVar(lvl) => {
-                    if *lvl == ty_var_level {
-                        Variance::Covariant
-                    } else {
-                        Variance::Constant
-                    }
-                }
-                Type::Arr { arg, result } => arg
-                    .get_variance_of(ty_var_level)
-                    .invert()
-                    .add(result.get_variance_of(ty_var_level)),
-                Type::Enum(variants) => variants
-                    .0
-                    .values()
-                    .map(|t| t.get_variance_of(ty_var_level))
-                    .sum(),
-                Type::Record(fields) => fields
-                    .0
-                    .values()
-                    .map(|t| t.get_variance_of(ty_var_level))
-                    .sum(),
-                Type::Tuple(elems) => elems.iter().map(|t| t.get_variance_of(ty_var_level)).sum(),
-                // the unknown type should in fact never appear here but we allow it because
-                // throwing an error would complicate this function
-                Type::Bool | Type::Any | Type::Never | Type::Unknown => Variance::Constant,
-            }
-        }
-
         pub(super) fn update_unconstrained_variances(
             &self,
             subtype: bool,
@@ -582,12 +512,16 @@ mod inference {
                     }
                     result.update_unconstrained_variances(
                         subtype,
-                        &ctx.push_unbound_ty_var(name, name, *bounds),
+                        &ctx.push_ty_var(name, name, TyVar::Bounded(*bounds)),
                     )
                 }
+                Type::RecAbs { name, result } => result.update_unconstrained_variances(
+                    subtype,
+                    &ctx.push_ty_var(name, name, TyVar::Rec),
+                ),
                 Type::TyVar(level) => {
                     let (_, ty_var) = ctx.get_found_ty_var_unwrap(*level)?;
-                    if let TyVar::Inferred(ty_constraint) = ty_var {
+                    if let InferenceTyVar::Inferred(ty_constraint) = ty_var {
                         let variance = if subtype {
                             Variance::Covariant
                         } else {
@@ -681,7 +615,10 @@ fn expect_type_rec<'a>(
             (ctx.get_expected_ty_var_unwrap(level)?, expected, found)
         };
         let ty = match ty_var {
-            TyVar::Unbound(bounds) => {
+            InferenceTyVar::TyVar(TyVar::Rec) => Err(PlainContextError::new(
+                "recursive type variables are only comparable to themselves".to_string(),
+            ))?,
+            InferenceTyVar::TyVar(TyVar::Bounded(bounds)) => {
                 // a type is guaranteed to be a supertype/subtype of the instantiated type iff it is a
                 // supertype/subtype of the upper/lower bound (due to the transitivity of subtyping)
                 let bound = if subtype == is_found {
@@ -711,7 +648,7 @@ fn expect_type_rec<'a>(
                     )))
                 })?
             }
-            TyVar::Inferred(ty_constraint) => {
+            InferenceTyVar::Inferred(ty_constraint) => {
                 ty_constraint
                     .constrain(level, other, subtype, ctx)
                     .map_err(if ty_config.ty_infer_fail {
@@ -778,7 +715,7 @@ fn expect_type_rec<'a>(
                         subtype,
                         ty_config,
                         // we choose the narrower bounds
-                        &ctx.push_unbound_ty_var(name_expected, name_found, *bounds_super),
+                        &ctx.push_ty_var(name_expected, name_found, TyVar::Bounded(*bounds_super)),
                     )
                     .map(|result| {
                         ctx.intern(Type::TyAbs {
@@ -834,9 +771,38 @@ fn expect_type_rec<'a>(
                 .into())
             }
         }
+        (
+            Type::RecAbs {
+                name: name_expected,
+                result: result_expected,
+            },
+            Type::RecAbs {
+                name: name_found,
+                result: result_found,
+            },
+            _,
+        ) => expect_type_rec(
+            result_expected,
+            result_found,
+            subtype,
+            ty_config,
+            &ctx.push_ty_var(name_expected, name_found, TyVar::Rec),
+        )
+        .map(|result| {
+            ctx.intern(Type::RecAbs {
+                name: name_found,
+                result,
+            })
+        })
+        .try_wrap_error(|| {
+            Ok(PlainContextError::new(format!(
+                "assuming {name_expected} == {name_found}"
+            )))
+        }),
         (Type::TyVar(level_expected), Type::TyVar(level_found), _) => {
             let mapped_level_expected = ctx.map_expected_level(*level_expected)?;
             if mapped_level_expected == *level_found {
+                // also covers the TyVar::Rec case
                 Ok(found)
             } else if mapped_level_expected.deeper_than(*level_found) {
                 // if levels are not equal (as above), we 'instantiate' the deeper ty_var first to avoid
@@ -972,12 +938,18 @@ fn expect_type_rec<'a>(
         // not using _ to avoid catching more cases than intended
         (
             Type::TyAbs { .. }
+            | Type::RecAbs { .. }
             | Type::Arr { .. }
             | Type::Enum(..)
             | Type::Record(..)
             | Type::Tuple(..)
             | Type::Bool,
-            Type::Arr { .. } | Type::Enum(..) | Type::Record(..) | Type::Tuple(..) | Type::Bool,
+            Type::RecAbs { .. }
+            | Type::Arr { .. }
+            | Type::Enum(..)
+            | Type::Record(..)
+            | Type::Tuple(..)
+            | Type::Bool,
             _,
         ) => Err(PlainContextError::new("types are incompatible".to_string()).into()),
     }

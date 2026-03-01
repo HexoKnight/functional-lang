@@ -3,7 +3,7 @@ use itertools::{Itertools, zip_eq};
 use crate::{
     common::{hashmap_intersection, hashmap_union},
     typing::{
-        InternedType, TyConfig,
+        InternedType, TyConfig, TyVar,
         context::{ContextInner, TyArenaContext, TyVarContext},
         error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
         subtyping::expect_type,
@@ -16,7 +16,7 @@ use crate::{
 macro_rules! ctx {
     () => {
          impl TyArenaContext<'a, Inner = &'inn ContextInner<'a>>
-            + TyVarContext<'a, TyVar = TyBounds<'a>>
+            + TyVarContext<'a, TyVar = TyVar<'a>>
     };
 }
 
@@ -121,7 +121,30 @@ fn merge<'a: 'inn, 'inn>(
                 Type::TyAbs {
                     name,
                     bounds,
-                    result: merge2(res1, res2, join, &ctx.push_ty_var(name, bounds))?,
+                    result: merge2(
+                        res1,
+                        res2,
+                        join,
+                        &ctx.push_ty_var(name, TyVar::Bounded(bounds)),
+                    )?,
+                }
+            }
+            (
+                Type::RecAbs {
+                    name: name1,
+                    result: res1,
+                },
+                Type::RecAbs {
+                    name: name2,
+                    result: res2,
+                },
+            ) => {
+                // we take the minimum arbitrarily,
+                // it doesn't even have to match elsewhere but it should
+                let name = std::cmp::min(name1, name2);
+                Type::RecAbs {
+                    name,
+                    result: merge2(res1, res2, join, &ctx.push_ty_var(name, TyVar::Rec))?,
                 }
             }
             (Type::TyVar(level1), Type::TyVar(level2)) => {
@@ -222,6 +245,7 @@ fn merge<'a: 'inn, 'inn>(
             // not using _ to avoid catching more cases than intended
             (
                 Type::TyAbs { .. }
+                | Type::RecAbs { .. }
                 | Type::TyVar { .. }
                 | Type::Arr { .. }
                 | Type::Enum(..)

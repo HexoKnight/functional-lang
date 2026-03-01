@@ -6,7 +6,7 @@ use crate::{
     common::WithInfo,
     reprs::untyped_ir as uir,
     typing::{
-        InternedType, TyConfig,
+        InternedType, TyConfig, TyVar, Variance,
         context::{ContextInner, TyArenaContext, TyVarContext},
         error::{SpannedError, TypeCheckError, TypeCheckResult},
         subtyping::expect_type,
@@ -21,7 +21,7 @@ macro_rules! ctx {
     };
     ($a:lifetime, $inn:lifetime) => {
          impl TyArenaContext<$a, Inner = &$inn ContextInner<$a>>
-            + TyVarContext<$a, TyVar = TyBounds<$a>>
+            + TyVarContext<$a, TyVar = TyVar<$a>>
     };
 }
 
@@ -40,7 +40,7 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
     where
         'a: 'inn,
     {
-        let WithInfo(_info, ty) = self;
+        let WithInfo(info, ty) = self;
 
         let ty = match ty {
             uir::RawType::TyAbs {
@@ -54,7 +54,31 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
                     bounds,
                     // ty_vars are not currently used so this is useless but may as well push it if
                     // only for future correctness
-                    result: result.eval(&ctx.push_ty_var(name, bounds))?,
+                    result: result.eval(&ctx.push_ty_var(name, TyVar::Bounded(bounds)))?,
+                }
+            }
+            uir::RawType::RecAbs { name, result } => {
+                let level = ctx.next_ty_var_level();
+                let result = result.eval(&ctx.push_ty_var(name, TyVar::Rec))?;
+
+                if let Variance::Invariant | Variance::Contravariant = result.get_variance_of(level)
+                {
+                    Err(SpannedError::new(
+                        "negative recursive types are not allowed",
+                        "recursive type variables cannot appear in negative positions,\n\
+                        such that the recursive type abstraction's body would be\n\
+                        contravariant or invariant in it's variable"
+                            .to_string(),
+                        "in this type",
+                        *info,
+                    ))?;
+                }
+
+                Type::RecAbs {
+                    name,
+                    // ty_vars are not currently used so this is useless but may as well push it if
+                    // only for future correctness
+                    result,
                 }
             }
             uir::RawType::TyVar(level) => Type::TyVar(*level),

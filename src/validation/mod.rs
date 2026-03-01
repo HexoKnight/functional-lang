@@ -359,6 +359,8 @@ impl<'i> Validate<'i> for ast::Term<'i> {
                         })?,
                 ),
             }),
+            ast::RawTerm::Fold(rec_type) => ir::RawTerm::Fold(rec_type.validate(ctx)?),
+            ast::RawTerm::Unfold(rec_type) => ir::RawTerm::Unfold(rec_type.validate(ctx)?),
             ast::RawTerm::Enum(enum_type, variant) => {
                 ir::RawTerm::Enum(enum_type.validate(ctx)?, Label(variant.0.text()))
             }
@@ -399,6 +401,13 @@ impl<'i> Validate<'i> for ast::Type<'i> {
             } => ir::RawType::TyAbs {
                 name: arg.0.text(),
                 bounds: bounds.validate(ctx)?,
+                result: result.validate(&ctx.push_ty_var(arg.0.text()))?,
+            },
+            ast::RawType::RecAbs {
+                arg,
+                result,
+            } => ir::RawType::RecAbs {
+                name: arg.0.text(),
                 result: result.validate(&ctx.push_ty_var(arg.0.text()))?,
             },
             ast::RawType::TyVar(ident) => {

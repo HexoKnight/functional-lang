@@ -672,3 +672,59 @@ fn importing() {
         "enum {none: (), some: ()}",
     );
 }
+
+#[test]
+fn recursive_types() {
+    evaluate_check_type(r"\x: rec A () -> A ()", "(rec A () -> A) -> ()");
+    validate_failure(r"\x: (rec A ()) -> A ()");
+    type_check_failure(r"\x: rec A A -> () ()");
+
+    evaluate_check_type(
+        r"?T ?S < T \x: (rec A T -> A) x .\y: (rec B S -> B) ()",
+        "[T] [S <T] (rec A T -> A) -> ()",
+    );
+
+    evaluate_check_type(r"fold: rec A ()", "() -> rec A ()");
+
+    let zero = def("zero: rec N enum {zero: ()}", r"() . enum zero . fold");
+    let succ = def(
+        "succ: (rec N enum {succ: N, zero: ()}) -> rec N enum {succ: N, zero: ()}",
+        r"\n n . enum succ . fold",
+    );
+
+    evaluate_check_type(
+        &wrapped(&[&zero, &succ], r"zero . succ . succ"),
+        "rec N enum {succ: N, zero: ()}",
+    );
+
+    evaluate_check_type(
+        r"import @std/prelude.fl .\{cons, nil} cons true nil",
+        "rec L enum {cons: (bool, L), nil: ()}",
+    );
+
+    let nil2 = def("nil: enum {nil: ()}", r"() . enum nil");
+    let cons2 = def(
+        "cons: \
+            [T] T \
+            -> enum {cons: (T, rec L enum {cons: (T, L), nil: ()}), nil: ()} \
+            -> enum {cons: (T, rec L enum {cons: (T, L), nil: ()})}",
+        r"?T \t \l (t, fold l) . enum cons",
+    );
+
+    evaluate_check_type(
+        &wrapped(&[&nil2, &cons2], r"cons true nil"),
+        "enum {cons: (bool, rec L enum {cons: (bool, L), nil: ()})}",
+    );
+
+    evaluate_check_type(
+        r"fold: rec A rec B enum{one: A, other: B}",
+        "(rec B enum {one: rec A rec B enum {one: A, other: B}, other: B}) -> rec A rec B enum {one: A, other: B}",
+    );
+
+    evaluate_check_type(r"unfold: rec A A", "(rec A A) -> rec A A");
+    evaluate_check_type(r"unfold: rec A ()", "(rec A ()) -> ()");
+    evaluate_check_type(
+        r"import @std/prelude.fl .\{nil, cons} unfold (cons true nil)",
+        "enum {cons: (bool, rec L enum {cons: (bool, L), nil: ()}), nil: ()}",
+    );
+}

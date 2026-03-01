@@ -36,6 +36,9 @@ pub enum RawTerm<'i> {
 
     Import(WithInfo<Span<'i>, ImportId>),
 
+    Fold(Option<Type<'i>>),
+    Unfold(Option<Type<'i>>),
+
     Enum(Option<Type<'i>>, Label<'i>),
     Match(Option<Type<'i>>, HashMap<Label<'i>, Term<'i>>),
 
@@ -59,6 +62,11 @@ pub enum RawType<'i> {
     TyAbs {
         name: &'i str,
         bounds: Box<TyBounds<'i>>,
+        result: Box<Type<'i>>,
+    },
+
+    RecAbs {
+        name: &'i str,
         result: Box<Type<'i>>,
     },
 

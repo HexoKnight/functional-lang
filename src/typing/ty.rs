@@ -22,6 +22,10 @@ pub enum Type<'ctx> {
         bounds: TyBounds<'ctx>,
         result: TypeRef<'ctx>,
     },
+    RecAbs {
+        name: &'ctx str,
+        result: TypeRef<'ctx>,
+    },
 
     TyVar(Lvl),
 
@@ -103,11 +107,20 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
                 w.push_str("] ");
                 result.write_display(&ctx.push_ty_var(name, ()), w)?;
             }
+            Type::RecAbs { name, result } => {
+                w.push_str("rec ");
+                w.push_str(name);
+                w.push(' ');
+                result.write_display(&ctx.push_ty_var(name, ()), w)?;
+            }
             Type::TyVar(level) => {
                 w.push_str(ctx.get_ty_var_unwrap(*level)?.0);
             }
             Type::Arr { arg, result } => {
-                if matches!(arg, Type::TyAbs { .. } | Type::Arr { .. }) {
+                if matches!(
+                    arg,
+                    Type::TyAbs { .. } | Type::RecAbs { .. } | Type::Arr { .. }
+                ) {
                     w.push('(');
                     arg.write_display(ctx, w)?;
                     w.push_str(") -> ");

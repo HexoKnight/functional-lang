@@ -217,6 +217,7 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for Term<'i> {
                 .1
                 // TODO: maybe try eliminate this clone??
                 .clone(),
+            RawTerm::Identity => RawValue::Func(Func::Identity),
             RawTerm::Enum(label) => RawValue::Func(Func::EnumCons(*label)),
             RawTerm::Match(arms) => RawValue::Func(Func::Match(
                 arms.iter()
@@ -260,6 +261,7 @@ impl<'i: 'ir, 'ir: 'a, 'a> Func<'i, Closure<'i, 'ir, 'a>> {
                 let ctx_ = ctx.apply_closure(closed_ctx).push_vars(args);
                 body.evaluate(&ctx_)?.1
             }
+            Func::Identity => arg.1,
             Func::EnumCons(label) => RawValue::EnumVariant(label, Box::new(arg)),
             Func::Match(mut arms) => {
                 let WithInfo(_info, arg) = arg;

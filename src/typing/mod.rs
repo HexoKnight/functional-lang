@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use std::{convert::Infallible, iter::Sum};
 
 use itertools::{Itertools, zip_eq};
 
@@ -47,6 +47,95 @@ impl TyConfig {
         Self {
             infer_ty_args: false,
             ty_infer_fail: false,
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+enum TyVar<'a> {
+    Bounded(TyBounds<'a>),
+    Rec,
+}
+
+#[derive(Copy, Clone)]
+enum Variance {
+    Constant,
+    Covariant,
+    Contravariant,
+    Invariant,
+}
+
+impl Variance {
+    fn invert(self) -> Self {
+        match self {
+            Self::Constant | Self::Invariant => self,
+            Self::Covariant => Self::Contravariant,
+            Self::Contravariant => Self::Covariant,
+        }
+    }
+
+    fn add(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Constant, other) | (other, Self::Constant) => other,
+            (Self::Covariant, Self::Covariant) => Self::Covariant,
+            (Self::Contravariant, Self::Contravariant) => Self::Contravariant,
+            (Self::Covariant, Self::Contravariant)
+            | (Self::Contravariant, Self::Covariant)
+            | (Self::Invariant, _)
+            | (_, Self::Invariant) => Self::Invariant,
+        }
+    }
+}
+impl Sum<Self> for Variance {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::Constant, Self::add)
+    }
+}
+
+impl Type<'_> {
+    fn get_variance_of(&self, ty_var_level: Lvl) -> Variance {
+        match self {
+            Type::TyAbs {
+                name: _,
+                bounds: TyBounds { upper, lower },
+                result,
+            } => [
+                upper
+                    .map(|t| t.get_variance_of(ty_var_level).invert())
+                    .unwrap_or(Variance::Constant),
+                lower
+                    .map(|t| t.get_variance_of(ty_var_level))
+                    .unwrap_or(Variance::Constant),
+                result.get_variance_of(ty_var_level),
+            ]
+            .into_iter()
+            .sum(),
+            Type::RecAbs { name: _, result } => result.get_variance_of(ty_var_level),
+            Type::TyVar(lvl) => {
+                if *lvl == ty_var_level {
+                    Variance::Covariant
+                } else {
+                    Variance::Constant
+                }
+            }
+            Type::Arr { arg, result } => arg
+                .get_variance_of(ty_var_level)
+                .invert()
+                .add(result.get_variance_of(ty_var_level)),
+            Type::Enum(variants) => variants
+                .0
+                .values()
+                .map(|t| t.get_variance_of(ty_var_level))
+                .sum(),
+            Type::Record(fields) => fields
+                .0
+                .values()
+                .map(|t| t.get_variance_of(ty_var_level))
+                .sum(),
+            Type::Tuple(elems) => elems.iter().map(|t| t.get_variance_of(ty_var_level)).sum(),
+            // the unknown type should in fact never appear here but we allow it because
+            // throwing an error would complicate this function
+            Type::Bool | Type::Any | Type::Never | Type::Unknown => Variance::Constant,
         }
     }
 }
@@ -161,6 +250,10 @@ impl<'a> Type<'a> {
                 },
                 result: result.try_map_ty_vars(f, level.deeper(), ctx)?,
             },
+            Type::RecAbs { name, result } => Type::RecAbs {
+                name,
+                result: result.try_map_ty_vars(f, level.deeper(), ctx)?,
+            },
             Type::TyVar(ty_level) => return f(*ty_level, level),
             Type::Arr { arg, result } => Type::Arr {
                 arg: arg.try_map_ty_vars(f, level, ctx)?,
@@ -264,15 +357,19 @@ impl<'a> Type<'a> {
     /// Get the minimal concrete supertype
     fn upper_concrete(
         &'a self,
-        ctx: &(impl TyArenaContext<'a> + TyVarContext<'a, TyVar = TyBounds<'a>>),
+        ctx: &(impl TyArenaContext<'a> + TyVarContext<'a, TyVar = TyVar<'a>>),
     ) -> Result<&'a Self, TypeCheckError<'static>> {
         match self {
-            Type::TyVar(level) => ctx
-                .get_ty_var_unwrap(*level)?
-                .1
-                .get_upper(ctx)
-                .upper_concrete(ctx),
+            Type::TyVar(level) => {
+                let (_, ty_var) = ctx.get_ty_var_unwrap(*level)?;
+                match ty_var {
+                    TyVar::Bounded(bounds) => bounds.get_upper(ctx).upper_concrete(ctx),
+                    // we have a isorecursive view of recursive types so this is concrete
+                    TyVar::Rec => Ok(self),
+                }
+            }
             Type::TyAbs { .. }
+            | Type::RecAbs { .. }
             | Type::Arr { .. }
             | Type::Enum(..)
             | Type::Record(..)
@@ -289,6 +386,7 @@ impl<'a> Type<'a> {
         match self {
             Type::Unknown | Type::Any => None,
             Type::TyAbs { .. }
+            | Type::RecAbs { .. }
             | Type::TyVar { .. }
             | Type::Arr { .. }
             | Type::Enum(..)
@@ -304,6 +402,7 @@ impl<'a> Type<'a> {
         match self {
             Type::Unknown | Type::Never => None,
             Type::TyAbs { .. }
+            | Type::RecAbs { .. }
             | Type::TyVar { .. }
             | Type::Arr { .. }
             | Type::Enum(..)
@@ -319,6 +418,7 @@ impl<'a> Type<'a> {
         match self {
             Type::Unknown => None,
             Type::TyAbs { .. }
+            | Type::RecAbs { .. }
             | Type::TyVar { .. }
             | Type::Arr { .. }
             | Type::Enum(..)

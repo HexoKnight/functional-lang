@@ -1,9 +1,17 @@
 (?T enum: T some) .\some
 (   enum none ()) .\none
 
+(() . enum nil . fold)
+    .\nil: rec L enum {nil: ()}
+(?T \t \l (t, l) . enum cons . fold)
+    .\cons: [T] T -> (rec L enum {cons: (T, L), nil: ()}) -> rec L enum {cons: (T, L), nil: ()}
+
 {
     some: some,
     none: none,
+
+    nil: nil,
+    cons: cons,
 
     map: ?T \e: enum { some: T, none: () } ?U \f: T -> U
         e.match {

@@ -26,11 +26,12 @@ match {
     "?", "<", ">",
     ".", ",",
 
+    "rec",
     "->", "_", "!",
 
     "[", "]", "(", ")", "{", "}",
 
-    "import", "enum", "match",
+    "import", "fold", "unfold", "enum", "match",
     "bool", "true", "false",
 
     r"[a-zA-Z]+" => IDENT,
@@ -99,6 +100,9 @@ SimpleTerm: RawTerm<'input> = {
 
     "import" <ImportPath> => RawTerm::Import(<>),
 
+    "fold" <(":" <Type>)?> => RawTerm::Fold(<>),
+    "unfold" <(":" <Type>)?> => RawTerm::Unfold(<>),
+
     "enum" <(":" <Type>)?> <Ident> => RawTerm::Enum(<>),
     "match" <ty:(":" <Type>)?> "{" <arms:CommaSep<(Ident Term)>> "}" => RawTerm::Match(ty, arms.into_boxed_slice()),
 
@@ -135,6 +139,8 @@ RawType: RawType<'input> = {
     <arg:Box<WithInfo<SimpleType>>> "->" <result:Box<Type>> => RawType::Arr { arg, result },
 
     "[" <arg:Ident> <bounds:Box<TyBounds>> "]" <result:Box<Type>> => RawType::TyAbs { arg, bounds, result },
+
+    "rec" <arg:Ident> <result:Box<Type>> => RawType::RecAbs { arg, result },
 
     SimpleType,
 }

@@ -23,6 +23,8 @@ pub enum RawTerm<'i> {
 
     Import(ImportId),
 
+    Identity,
+
     Enum(Label<'i>),
     Match(HashMap<Label<'i>, Term<'i>>),
 

@@ -26,6 +26,7 @@ pub enum RawValue<'i, Closure> {
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Func<'i, Closure> {
     Abs(ArgStructure<'i>, Closure),
+    Identity,
 
     EnumCons(Label<'i>),
     Match(HashMap<Label<'i>, Closure>),
@@ -71,6 +72,7 @@ impl<'i, Closure> Func<'i, Closure> {
     fn map_closure_rec<T>(self, map: &mut impl FnMut(Closure) -> T) -> Func<'i, T> {
         match self {
             Func::Abs(a, closure) => Func::Abs(a, map(closure)),
+            Func::Identity => Func::Identity,
             Func::EnumCons(l) => Func::EnumCons(l),
             Func::Match(arms) => Func::Match(
                 arms.into_iter()

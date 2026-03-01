@@ -11,7 +11,7 @@ use crate::{
         untyped_ir as uir,
     },
     typing::{
-        InternedType, TyConfig,
+        InternedType, TyConfig, TyVar,
         context::{ContextInner, TyArenaContext, TyVarContext},
         error::{IllegalError, SpannedError, TypeCheckError, TypeCheckResult},
         eval::TyEval,
@@ -30,9 +30,9 @@ mod context {
         importing::ImportId,
         reprs::common::{Idx, Lvl},
         typing::{
-            InternedType,
+            InternedType, TyVar,
             context::{ContextInner, Stack, TyArenaContext, TyVarContext},
-            ty::{TyBounds, Type},
+            ty::Type,
         },
     };
 
@@ -42,7 +42,7 @@ mod context {
         inner: &'inn ContextInner<'a>,
         import_tys: &'inn HashMap<ImportId, InternedType<'a>>,
         var_ty_stack: Stack<(InternedType<'a>, Lvl)>,
-        ty_var_stack: Stack<(&'a str, TyBounds<'a>)>,
+        ty_var_stack: Stack<(&'a str, TyVar<'a>)>,
     }
 
     impl<'a, 'inn> Context<'a, 'inn> {
@@ -109,15 +109,15 @@ mod context {
     }
 
     impl<'a> TyVarContext<'a> for Context<'a, '_> {
-        type TyVar = TyBounds<'a>;
+        type TyVar = TyVar<'a>;
 
-        fn push_ty_var(&self, ty_var_name: &'a str, ty_var: TyBounds<'a>) -> Self {
+        fn push_ty_var(&self, ty_var_name: &'a str, ty_var: Self::TyVar) -> Self {
             let mut new = self.clone();
             new.ty_var_stack.push((ty_var_name, ty_var));
             new
         }
 
-        fn get_ty_var(&self, level: Lvl) -> Option<(&'a str, TyBounds<'a>)> {
+        fn get_ty_var(&self, level: Lvl) -> Option<(&'a str, Self::TyVar)> {
             level.get(&self.ty_var_stack).copied()
         }
 
@@ -125,7 +125,7 @@ mod context {
             Lvl::get_depth(&self.ty_var_stack)
         }
 
-        fn get_ty_vars(&self) -> impl Iterator<Item = (&'a str, TyBounds<'a>)> {
+        fn get_ty_vars(&self) -> impl Iterator<Item = (&'a str, Self::TyVar)> {
             self.ty_var_stack.iter().copied()
         }
     }
@@ -535,7 +535,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     (None, None)
                 };
 
-                let ctx_ = ctx.push_ty_var(name, bounds);
+                let ctx_ = ctx.push_ty_var(name, TyVar::Bounded(bounds));
                 let (body, result) = body.type_check(check_result, ty_config, &ctx_)?;
 
                 let ty_abs = ctx.intern(Type::TyAbs {
@@ -653,6 +653,214 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                 ctx.get_import_ty(*import_id)
                     .ok_or_else(|| IllegalError::new("", Some(*span)))?,
             ),
+            uir::RawTerm::Fold(rec) => {
+                let rec = rec.eval(ctx)?;
+
+                let (check_arg, check_rec) = if let Some(check_type) = take_concrete_check_type()? {
+                    let Type::Arr {
+                        arg: check_arg,
+                        result: check_rec,
+                    } = check_type
+                    else {
+                        Err(SpannedError::ty_mismatch(
+                            check_type.display(ctx)?,
+                            "found a fold (a function)",
+                            *info,
+                        ))?
+                    };
+                    (
+                        check_arg.upper_concrete(ctx)?.known_not_never(),
+                        check_rec.upper_concrete(ctx)?.known_not_any(),
+                    )
+                } else {
+                    (None, None)
+                };
+
+                let rec = if let (Some(rec), Some(check_rec)) = (rec, check_rec) {
+                    Some(
+                        expect_type(check_rec, rec, true, ty_config.infer_ty_args(false), ctx)
+                            .try_wrap_error(|| {
+                                Ok(SpannedError::ty_ty_mismatch(
+                                    Type::Arr {
+                                        arg: &Type::Unknown,
+                                        result: check_rec,
+                                    }
+                                    .display(ctx)?,
+                                    Type::Arr {
+                                        arg: &Type::Unknown,
+                                        result: rec,
+                                    }
+                                    .display(ctx)?,
+                                    *info,
+                                ))
+                            })?,
+                    )
+                } else {
+                    rec.or(check_rec)
+                };
+
+                if let Some(rec) = rec {
+                    let Type::RecAbs {
+                        name: _,
+                        result: rec_body,
+                    } = rec
+                    else {
+                        Err(SpannedError::new(
+                            "type mismatch: expected recursive type",
+                            format!(
+                                "cannot fold into a non-recursive type: {}",
+                                rec.display(ctx)?
+                            ),
+                            "",
+                            *info,
+                        ))?
+                    };
+
+                    let unfolded_rec =
+                        rec_body.substitute_ty_var(ctx.next_ty_var_level(), rec, ctx);
+                    let arg = if let Some(check_arg) = check_arg {
+                        expect_type(
+                            check_arg,
+                            unfolded_rec,
+                            false,
+                            ty_config.infer_ty_args(false),
+                            ctx,
+                        )
+                        .try_wrap_error(|| {
+                            Ok(SpannedError::ty_ty_mismatch(
+                                Type::Arr {
+                                    arg: check_arg,
+                                    result: check_rec.unwrap_or(ctx.ty_unknown()),
+                                }
+                                .display(ctx)?,
+                                Type::Arr {
+                                    arg: unfolded_rec,
+                                    result: rec,
+                                }
+                                .display(ctx)?,
+                                *info,
+                            ))
+                        })?
+                    } else {
+                        unfolded_rec
+                    };
+
+                    (
+                        tir::RawTerm::Identity,
+                        ctx.intern(Type::Arr { arg, result: rec }),
+                    )
+                } else if ty_config.ty_infer_fail {
+                    Err(TypeCheckError::NonTerminalTypeInference)?
+                } else {
+                    Err(SpannedError::type_inference(
+                        "cannot infer type of fold".to_string(),
+                        *info,
+                    ))?
+                }
+            }
+            uir::RawTerm::Unfold(rec) => {
+                let rec = rec.eval(ctx)?;
+
+                let (check_rec, check_result) =
+                    if let Some(check_type) = take_concrete_check_type()? {
+                        let Type::Arr {
+                            arg: check_rec,
+                            result: check_result,
+                        } = check_type
+                        else {
+                            Err(SpannedError::ty_mismatch(
+                                check_type.display(ctx)?,
+                                "found an unfold (a function)",
+                                *info,
+                            ))?
+                        };
+                        (
+                            check_rec.upper_concrete(ctx)?.known_not_never(),
+                            check_result.upper_concrete(ctx)?.known_not_any(),
+                        )
+                    } else {
+                        (None, None)
+                    };
+
+                let rec = if let (Some(rec), Some(check_rec)) = (rec, check_rec) {
+                    Some(
+                        expect_type(check_rec, rec, false, ty_config.infer_ty_args(false), ctx)
+                            .try_wrap_error(|| {
+                                Ok(SpannedError::ty_ty_mismatch(
+                                    Type::Arr {
+                                        arg: check_rec,
+                                        result: &Type::Unknown,
+                                    }
+                                    .display(ctx)?,
+                                    Type::Arr {
+                                        arg: rec,
+                                        result: &Type::Unknown,
+                                    }
+                                    .display(ctx)?,
+                                    *info,
+                                ))
+                            })?,
+                    )
+                } else {
+                    rec.or(check_rec)
+                };
+
+                if let Some(rec) = rec {
+                    let Type::RecAbs {
+                        name: _,
+                        result: rec_body,
+                    } = rec
+                    else {
+                        Err(SpannedError::new(
+                            "type mismatch: expected recursive type",
+                            format!("cannot unfold a non-recursive type: {}", rec.display(ctx)?),
+                            "",
+                            *info,
+                        ))?
+                    };
+
+                    let unfolded_rec =
+                        rec_body.substitute_ty_var(ctx.next_ty_var_level(), rec, ctx);
+                    let result = if let Some(check_result) = check_result {
+                        expect_type(
+                            check_result,
+                            unfolded_rec,
+                            true,
+                            ty_config.infer_ty_args(false),
+                            ctx,
+                        )
+                        .try_wrap_error(|| {
+                            Ok(SpannedError::ty_ty_mismatch(
+                                Type::Arr {
+                                    arg: check_rec.unwrap_or(ctx.ty_unknown()),
+                                    result: check_result,
+                                }
+                                .display(ctx)?,
+                                Type::Arr {
+                                    arg: rec,
+                                    result: unfolded_rec,
+                                }
+                                .display(ctx)?,
+                                *info,
+                            ))
+                        })?
+                    } else {
+                        unfolded_rec
+                    };
+
+                    (
+                        tir::RawTerm::Identity,
+                        ctx.intern(Type::Arr { arg: rec, result }),
+                    )
+                } else if ty_config.ty_infer_fail {
+                    Err(TypeCheckError::NonTerminalTypeInference)?
+                } else {
+                    Err(SpannedError::type_inference(
+                        "cannot infer type of fold".to_string(),
+                        *info,
+                    ))?
+                }
+            }
             uir::RawTerm::Enum(arg, label) => {
                 let arg = arg.eval(ctx)?;
 

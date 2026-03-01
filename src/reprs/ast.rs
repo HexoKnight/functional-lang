@@ -30,6 +30,9 @@ pub enum RawTerm<'i> {
 
     Import(ImportPath<'i>),
 
+    Fold(Option<Type<'i>>),
+    Unfold(Option<Type<'i>>),
+
     Enum(Option<Type<'i>>, Ident<'i>),
     Match(Option<Type<'i>>, Box<[(Ident<'i>, Term<'i>)]>),
 
@@ -102,6 +105,11 @@ pub enum RawType<'i> {
     TyAbs {
         arg: Ident<'i>,
         bounds: Box<TyBounds<'i>>,
+        result: Box<Type<'i>>,
+    },
+
+    RecAbs {
+        arg: Ident<'i>,
         result: Box<Type<'i>>,
     },
 
