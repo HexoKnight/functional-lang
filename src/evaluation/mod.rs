@@ -8,7 +8,7 @@ use crate::{
     evaluation::context::ContextInner,
     importing::ImportId,
     reprs::{
-        common::{ArgStructure, RawArgStructure},
+        common::{ArgTermStructure, RawArgStructure, RawArgTermStructure},
         typed_ir::{RawTerm, Term},
         value::{self, Closure, Func, RawValue},
     },
@@ -293,17 +293,17 @@ impl<'i: 'ir, 'ir: 'a, 'a> Func<'i, Closure<'i, 'ir, 'a>> {
 impl Value<'_, '_, '_> {
     fn destructure(
         self,
-        arg_structure: ArgStructure,
+        arg_structure: ArgTermStructure,
     ) -> Result<impl Iterator<Item = Self>, EvaluationError> {
         fn inner<'i, 'ir, 'a>(
-            arg_structure: ArgStructure,
+            arg_structure: ArgTermStructure,
             val: Value<'i, 'ir, 'a>,
             output: &mut impl FnMut(Value<'i, 'ir, 'a>),
         ) -> Result<(), EvaluationError> {
             let WithInfo(info, val) = val;
             let WithInfo(_arg_structure_span, arg_structure) = arg_structure;
             match arg_structure {
-                RawArgStructure::Record(st_fields) => {
+                RawArgTermStructure::Term(RawArgStructure::Record(st_fields)) => {
                     let RawValue::Record(mut val_fields) = val else {
                         return Err(EvaluationError::Illegal(
                             "type checking failed: record destructure on non-record".to_string(),
@@ -321,7 +321,7 @@ impl Value<'_, '_, '_> {
                     })?;
                 }
 
-                RawArgStructure::Tuple(st_elems) => {
+                RawArgTermStructure::Term(RawArgStructure::Tuple(st_elems)) => {
                     let RawValue::Tuple(val_elems) = val else {
                         return Err(EvaluationError::Illegal(
                             "type checking failed: tuple destructure on non-tuple".to_string(),
@@ -338,7 +338,8 @@ impl Value<'_, '_, '_> {
                     zip_eq(st_elems, val_elems).try_for_each(|(st, val)| inner(st, val, output))?;
                 }
 
-                RawArgStructure::Var => output(WithInfo(info, val)),
+                RawArgTermStructure::Term(RawArgStructure::Var) => output(WithInfo(info, val)),
+                RawArgTermStructure::Type(()) => {}
             }
             Ok(())
         }

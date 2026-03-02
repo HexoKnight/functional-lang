@@ -98,14 +98,24 @@ impl<'i> FileInfo<'i> {
     }
 }
 
-pub type ArgStructure<'i> = WithInfo<Span<'i>, RawArgStructure<'i>>;
+type ArgMaybeTermStructure<'i, T> = WithInfo<Span<'i>, RawArgTermStructure<'i, T>>;
+pub type ArgStructure<'i> = ArgMaybeTermStructure<'i, ArgTypeStructure<'i>>;
+pub type ArgTermStructure<'i> = ArgMaybeTermStructure<'i, ()>;
+pub type ArgTypeStructure<'i> = WithInfo<Span<'i>, RawArgTypeStructure<'i>>;
 
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub enum RawArgStructure<'i> {
-    Record(Box<[(Label<'i>, ArgStructure<'i>)]>),
-    Tuple(Box<[ArgStructure<'i>]>),
+pub enum RawArgStructure<'i, A> {
+    Record(Box<[(Label<'i>, A)]>),
+    Tuple(Box<[A]>),
     Var,
 }
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub enum RawArgTermStructure<'i, T> {
+    Term(RawArgStructure<'i, ArgMaybeTermStructure<'i, T>>),
+    Type(T),
+}
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct RawArgTypeStructure<'i>(pub RawArgStructure<'i, ArgTypeStructure<'i>>);
 
 #[derive(Hash, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Label<'i>(pub &'i str);
@@ -141,6 +151,11 @@ impl Lvl {
         stack.get(self.0)
     }
 
+    /// get item at level in stack or the depth the level goes beyond it
+    pub fn get_or_beyond<T>(self, stack: &[T]) -> Result<&T, Self> {
+        stack.get(self.0).ok_or_else(|| Lvl(self.0 - stack.len()))
+    }
+
     /// find level of item in stack
     pub fn find<T>(stack: &[T], f: impl FnMut(&T) -> bool) -> Option<Self> {
         stack.iter().position(f).map(Self)
@@ -151,6 +166,11 @@ impl Lvl {
         self.0 >= other.0
     }
 
+    /// gets the amount deeper `self` is than `other`
+    pub fn get_deeper_than(self, other: Self) -> Option<Self> {
+        self.0.checked_sub(other.0).map(Self)
+    }
+
     /// shallow level by one level (None if already shallow as possible)
     pub fn shallower(self) -> Option<Self> {
         self.0.checked_sub(1).map(Self)
@@ -159,6 +179,11 @@ impl Lvl {
     /// deepen level by one level (shouldn't reach maximum)
     pub fn deeper(self) -> Self {
         Self(self.0 + 1)
+    }
+
+    /// deepen level by other level (shouldn't reach maximum)
+    pub fn deeper_by(self, other: Self) -> Self {
+        Self(self.0 + other.0)
     }
 
     /// translate level by difference between other levels (shouldn't reach maximum)

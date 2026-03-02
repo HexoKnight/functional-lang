@@ -34,6 +34,8 @@ pub enum RawTerm<'i> {
 
     Var(Idx),
 
+    Type(Type<'i>),
+
     Import(WithInfo<Span<'i>, ImportId>),
 
     Fold(Option<Type<'i>>),

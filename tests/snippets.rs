@@ -728,3 +728,22 @@ fn recursive_types() {
         "enum {cons: (bool, rec L enum {cons: (bool, L), nil: ()}), nil: ()}",
     );
 }
+
+#[test]
+fn type_objects() {
+    evaluate_check_type(r"type enum {a: ()}", "type enum {a: ()}");
+    evaluate_check_type(
+        r"type enum {a: ()} .\type E \e:E e",
+        "enum {a: ()} -> enum {a: ()}",
+    );
+    evaluate_check_type(
+        r"import @std/prelude.fl .\{ty: type { nat }} \n:nat unfold n",
+        "(rec N enum {succ: N, zero: ()}) -> enum {succ: rec N enum {succ: N, zero: ()}, zero: ()}",
+    );
+    evaluate_check_type(r"type {} .\type {} ()", "()");
+    type_check_failure(r"type {} .\{} ()");
+    evaluate_check_type(
+        r"type {asd: bool, a: ((), {})} .\type {a, asd} \asd:asd asd",
+        "bool -> bool",
+    );
+}

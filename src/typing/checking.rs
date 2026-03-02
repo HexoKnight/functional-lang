@@ -98,6 +98,15 @@ mod context {
         pub(super) fn get_import_ty(&self, import_id: ImportId) -> Option<InternedType<'a>> {
             self.import_tys.get(&import_id).copied()
         }
+
+        pub(super) fn push_ty_vars(
+            &self,
+            ty_vars: impl IntoIterator<Item = (&'a str, <Self as TyVarContext<'a>>::TyVar)>,
+        ) -> Self {
+            let mut new = self.clone();
+            new.ty_var_stack.extend(ty_vars);
+            new
+        }
     }
 
     impl<'a, 'inn> TyArenaContext<'a> for Context<'a, 'inn> {
@@ -274,10 +283,20 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                             })?;
                     }
 
-                    let destructured_arg_types = arg.destructure(arg_structure, ctx)?;
-                    let ctx_ = ctx.push_var_tys(destructured_arg_types);
+                    let (arg_structure, arg_types, ty_vars) =
+                        arg.destructure(arg_structure, ctx)?;
+
+                    let ctx_ = ctx
+                        .push_var_tys(arg_types.into_iter().map(|(_, ty)| ty))
+                        .push_ty_vars(ty_vars.iter().map(|(name, ty)| (*name, TyVar::Type(ty))));
                     let (body, result) =
                         body.type_check(check_result, ty_config.infer_ty_args(true), &ctx_)?;
+
+                    let result = result.substitute_ty_vars(
+                        ctx.next_ty_var_level(),
+                        &ty_vars.into_iter().map(|(_, ty)| ty).collect::<Box<_>>(),
+                        ctx,
+                    );
 
                     let ty = Type::Arr { arg, result };
 
@@ -313,11 +332,20 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     };
                     let check_result = check_result.known_not_any();
 
-                    let check_destructured_args = check_arg.destructure(arg_structure, ctx)?;
+                    let (arg_structure, check_args, ty_vars) =
+                        check_arg.destructure(arg_structure, ctx)?;
 
-                    let ctx_ = ctx.push_var_tys(check_destructured_args);
+                    let ctx_ = ctx
+                        .push_var_tys(check_args.into_iter().map(|(_, ty)| ty))
+                        .push_ty_vars(ty_vars.iter().map(|(name, ty)| (*name, TyVar::Type(ty))));
                     let (body, result) =
                         body.type_check(check_result, ty_config.infer_ty_args(true), &ctx_)?;
+
+                    let result = result.substitute_ty_vars(
+                        ctx.next_ty_var_level(),
+                        &ty_vars.into_iter().map(|(_, ty)| ty).collect::<Box<_>>(),
+                        ctx,
+                    );
 
                     let ty = Type::Arr {
                         arg: check_arg,
@@ -648,11 +676,15 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
 
                 (tir::RawTerm::Var(*index), ty)
             }
+            uir::RawTerm::Type(ty) => (
+                tir::RawTerm::Tuple(Box::new([])),
+                ctx.intern(Type::TyObj(ty.eval(ctx)?)),
+            ),
             uir::RawTerm::Import(WithInfo(span, import_id)) => (
                 tir::RawTerm::Import(*import_id),
                 ctx.get_import_ty(*import_id).ok_or_else(|| {
                     IllegalError::new(
-                        format!("import {:?} not found during type checking", import_id),
+                        format!("import {import_id:?} not found during type checking"),
                         Some(*span),
                     )
                 })?,

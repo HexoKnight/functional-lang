@@ -536,6 +536,7 @@ mod inference {
                     }
                     Ok(())
                 }
+                Type::TyObj(ty) => ty.update_unconstrained_variances(subtype, ctx),
                 Type::Arr { arg, result } => {
                     arg.update_unconstrained_variances(!subtype, ctx)?;
                     result.update_unconstrained_variances(subtype, ctx)
@@ -615,6 +616,13 @@ fn expect_type_rec<'a>(
             (ctx.get_expected_ty_var_unwrap(level)?, expected, found)
         };
         let ty = match ty_var {
+            InferenceTyVar::TyVar(TyVar::Type(ty)) => {
+                if is_found {
+                    expect_type_rec(expected, ty, subtype, ty_config, ctx)
+                } else {
+                    expect_type_rec(ty, found, subtype, ty_config, ctx)
+                }?
+            }
             InferenceTyVar::TyVar(TyVar::Rec) => Err(PlainContextError::new(
                 "recursive type variables are only comparable to themselves".to_string(),
             ))?,
@@ -837,6 +845,14 @@ fn expect_type_rec<'a>(
                 result: expect_type_rec(res_expected, res_found, subtype, ty_config, ctx)?,
             }))
         })(),
+        (Type::TyObj(expected), Type::TyObj(found), _) => expect_type_rec(
+            expected,
+            found,
+            subtype,
+            ty_config.infer_ty_args(false),
+            ctx,
+        )
+        .map(|ty| ctx.intern(Type::TyObj(ty))),
         (Type::Enum(variants_expected), Type::Enum(variants_found), _) => {
             let (variants_super, variants_sub) =
                 super_sub_of(variants_expected, variants_found, swapped);
@@ -939,12 +955,14 @@ fn expect_type_rec<'a>(
         (
             Type::TyAbs { .. }
             | Type::RecAbs { .. }
+            | Type::TyObj(_)
             | Type::Arr { .. }
             | Type::Enum(..)
             | Type::Record(..)
             | Type::Tuple(..)
             | Type::Bool,
             Type::RecAbs { .. }
+            | Type::TyObj(_)
             | Type::Arr { .. }
             | Type::Enum(..)
             | Type::Record(..)

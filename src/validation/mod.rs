@@ -1,12 +1,16 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::iter::once;
 
 use itertools::Itertools;
 
 use crate::common::WithInfo;
 use crate::importing::{ImportError, ImportId, ImportResolver};
-use crate::reprs::ast;
-use crate::reprs::common::{ArgStructure, Label, RawArgStructure, Span};
+use crate::reprs::ast::{self, RawAssignee, RawTermAssignee};
+use crate::reprs::common::{
+    ArgStructure, ArgTypeStructure, Label, RawArgStructure, RawArgTermStructure,
+    RawArgTypeStructure, Span,
+};
 use crate::reprs::untyped_ir as ir;
 
 use self::context::{Context, ContextInner};
@@ -78,9 +82,9 @@ mod context {
             Idx::find(&self.var_stack, |var| *var == name)
         }
 
-        pub(super) fn push_ty_var(&self, ty_var: &'i str) -> Self {
+        pub(super) fn push_ty_vars(&self, ty_vars: impl IntoIterator<Item = &'i str>) -> Self {
             let mut new = self.clone();
-            new.ty_var_stack.push(ty_var);
+            new.ty_var_stack.extend(ty_vars);
             new
         }
 
@@ -289,11 +293,14 @@ impl<'i> Validate<'i> for ast::Term<'i> {
                 arg_type,
                 body,
             } => {
-                let (arg_structure, arg_vars) = extract_idents(arg)?;
+                let (arg_structure, arg_vars, ty_vars) = extract_idents(arg)?;
                 ir::RawTerm::Abs {
                     arg_structure,
                     arg_type: arg_type.validate(ctx)?,
-                    body: body.validate(&ctx.push_vars(arg_vars.map(|i| i.0.text())))?,
+                    body: body.validate(
+                        &ctx.push_vars(arg_vars.map(|i| i.0.text()))
+                            .push_ty_vars(ty_vars.map(|i| i.0.text())),
+                    )?,
                 }
             }
             ast::RawTerm::App { func, arg } => ir::RawTerm::App {
@@ -303,7 +310,7 @@ impl<'i> Validate<'i> for ast::Term<'i> {
             ast::RawTerm::TyAbs { arg, bounds, body } => ir::RawTerm::TyAbs {
                 name: arg.0.text(),
                 bounds: bounds.validate(ctx)?,
-                body: body.validate(&ctx.push_ty_var(arg.0.text()))?,
+                body: body.validate(&ctx.push_ty_vars(once(arg.0.text())))?,
             },
             ast::RawTerm::TyApp { func, arg } => ir::RawTerm::TyApp {
                 abs: func.validate(ctx)?,
@@ -319,6 +326,7 @@ impl<'i> Validate<'i> for ast::Term<'i> {
                 };
                 ir::RawTerm::Var(index)
             }
+            ast::RawTerm::Type(ty) => ir::RawTerm::Type(ty.validate(ctx)?),
             ast::RawTerm::Import(path) => ir::RawTerm::Import(match path {
                 ast::ImportPath::Relative { span } => WithInfo(
                     *span,
@@ -401,14 +409,11 @@ impl<'i> Validate<'i> for ast::Type<'i> {
             } => ir::RawType::TyAbs {
                 name: arg.0.text(),
                 bounds: bounds.validate(ctx)?,
-                result: result.validate(&ctx.push_ty_var(arg.0.text()))?,
+                result: result.validate(&ctx.push_ty_vars(once(arg.0.text())))?,
             },
-            ast::RawType::RecAbs {
-                arg,
-                result,
-            } => ir::RawType::RecAbs {
+            ast::RawType::RecAbs { arg, result } => ir::RawType::RecAbs {
                 name: arg.0.text(),
-                result: result.validate(&ctx.push_ty_var(arg.0.text()))?,
+                result: result.validate(&ctx.push_ty_vars(once(arg.0.text())))?,
             },
             ast::RawType::TyVar(ident) => {
                 let Some(level) = ctx.find_ty_var(ident.0.text()) else {
@@ -459,50 +464,103 @@ impl<'i> Validate<'i> for ast::TyBounds<'i> {
     }
 }
 
+/// # Returns
+/// (`arg_structure`, `var_idents`, `ty_var_idents`)
 fn extract_idents<'a, 'i>(
     assignee: &'a ast::Assignee<'i>,
-) -> Result<'i, (ArgStructure<'i>, impl Iterator<Item = &'a ast::Ident<'i>>)> {
-    fn extract_idents_inner<'a, 'i>(
-        assignee: &'a ast::Assignee<'i>,
+) -> Result<
+    'i,
+    (
+        ArgStructure<'i>,
+        impl Iterator<Item = &'a ast::Ident<'i>>,
+        impl Iterator<Item = &'a ast::Ident<'i>>,
+    ),
+> {
+    fn extract_idents_inner<'i, 'a, A1, A2>(
+        assignee: &'a ast::RawAssignee<'i, A1>,
         idents: &mut Vec<&'a ast::Ident<'i>>,
-    ) -> Result<'i, ArgStructure<'i>> {
-        let WithInfo(span, assignee) = assignee;
-
+        mut inner: impl FnMut(
+            &'a A1,
+            &mut Vec<&'a ast::Ident<'i>>,
+        ) -> Result<'i, WithInfo<Span<'i>, A2>>,
+        wrap: impl Fn(RawArgStructure<'i, WithInfo<Span<'i>, A2>>) -> A2,
+    ) -> Result<'i, A2> {
         let st = match assignee {
-            ast::RawAssignee::Record(fields) => RawArgStructure::Record(
+            RawAssignee::Record(fields) => RawArgStructure::Record(
                 check_unique_labels(fields)
                     .map_ok(|(ident, label, assignee)| {
                         Ok((
                             label,
                             if let Some(assignee) = assignee {
-                                extract_idents_inner(assignee, idents)?
+                                inner(assignee, idents)?
                             } else {
                                 idents.push(ident);
-                                WithInfo(ident.0, RawArgStructure::Var)
+                                WithInfo(ident.0, wrap(RawArgStructure::Var))
                             },
                         ))
                     })
                     .map(Result::flatten)
                     .try_collect()?,
             ),
-            ast::RawAssignee::Tuple(elements) => RawArgStructure::Tuple(
+            RawAssignee::Tuple(elements) => RawArgStructure::Tuple(
                 elements
                     .iter()
-                    .map(|assignee| extract_idents_inner(assignee, idents))
+                    .map(|assignee| inner(assignee, idents))
                     .try_collect()?,
             ),
-            ast::RawAssignee::Ident(ident) => {
+            RawAssignee::Ident(ident) => {
                 idents.push(ident);
                 RawArgStructure::Var
+            }
+        };
+        Ok(wrap(st))
+    }
+
+    fn extract_term_idents_inner<'i, 'a>(
+        assignee: &'a ast::Assignee<'i>,
+        term_idents: &mut Vec<&'a ast::Ident<'i>>,
+        type_idents: &mut Vec<&'a ast::Ident<'i>>,
+    ) -> Result<'i, ArgStructure<'i>> {
+        let WithInfo(span, assignee) = assignee;
+
+        let st = match assignee {
+            RawTermAssignee::Term(assignee) => extract_idents_inner(
+                assignee,
+                term_idents,
+                |assignee, term_idents| {
+                    extract_term_idents_inner(assignee, term_idents, type_idents)
+                },
+                RawArgTermStructure::Term,
+            )?,
+            RawTermAssignee::Type(assignee) => {
+                RawArgTermStructure::Type(extract_type_idents_inner(assignee, type_idents)?)
             }
         };
 
         Ok(WithInfo(*span, st))
     }
-    let mut idents = Vec::new();
+
+    fn extract_type_idents_inner<'i, 'a>(
+        assignee: &'a ast::TypeAssignee<'i>,
+        idents: &mut Vec<&'a ast::Ident<'i>>,
+    ) -> Result<'i, ArgTypeStructure<'i>> {
+        let WithInfo(span, assignee) = assignee;
+
+        let st = extract_idents_inner(
+            &assignee.0,
+            idents,
+            extract_type_idents_inner,
+            RawArgTypeStructure,
+        )?;
+
+        Ok(WithInfo(*span, st))
+    }
+    let mut term_idents = Vec::new();
+    let mut type_idents = Vec::new();
     Ok((
-        extract_idents_inner(assignee, &mut idents)?,
-        idents.into_iter(),
+        extract_term_idents_inner(assignee, &mut term_idents, &mut type_idents)?,
+        term_idents.into_iter(),
+        type_idents.into_iter(),
     ))
 }
 

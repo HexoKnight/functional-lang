@@ -29,6 +29,8 @@ pub enum Type<'ctx> {
 
     TyVar(Lvl),
 
+    TyObj(TypeRef<'ctx>),
+
     Arr {
         arg: TypeRef<'ctx>,
         result: TypeRef<'ctx>,
@@ -116,10 +118,14 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
             Type::TyVar(level) => {
                 w.push_str(ctx.get_ty_var_unwrap(*level)?.0);
             }
+            Type::TyObj(ty) => {
+                w.push_str("type ");
+                ty.write_display(ctx, w)?;
+            }
             Type::Arr { arg, result } => {
                 if matches!(
                     arg,
-                    Type::TyAbs { .. } | Type::RecAbs { .. } | Type::Arr { .. }
+                    Type::TyAbs { .. } | Type::RecAbs { .. } | Type::TyObj(_) | Type::Arr { .. }
                 ) {
                     w.push('(');
                     arg.write_display(ctx, w)?;

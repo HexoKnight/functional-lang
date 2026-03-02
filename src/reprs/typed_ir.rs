@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::{
     common::WithInfo,
     importing::ImportId,
-    reprs::common::{ArgStructure, Idx, Label, Span},
+    reprs::common::{ArgTermStructure, Idx, Label, Span},
 };
 
 pub type Term<'i> = WithInfo<Span<'i>, RawTerm<'i>>;
@@ -11,7 +11,7 @@ pub type Term<'i> = WithInfo<Span<'i>, RawTerm<'i>>;
 #[derive(Eq, PartialEq, Debug)]
 pub enum RawTerm<'i> {
     Abs {
-        arg_structure: ArgStructure<'i>,
+        arg_structure: ArgTermStructure<'i>,
         body: Box<Term<'i>>,
     },
     App {

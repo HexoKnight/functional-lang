@@ -31,6 +31,7 @@ match {
 
     "[", "]", "(", ")", "{", "}",
 
+    "type",
     "import", "fold", "unfold", "enum", "match",
     "bool", "true", "false",
 
@@ -98,6 +99,8 @@ SimpleTerm: RawTerm<'input> = {
 
     Ident => RawTerm::Var(<>),
 
+    "type" <Type> => RawTerm::Type(<>),
+
     "import" <ImportPath> => RawTerm::Import(<>),
 
     "fold" <(":" <Type>)?> => RawTerm::Fold(<>),
@@ -114,12 +117,21 @@ SimpleTerm: RawTerm<'input> = {
     "false" => RawTerm::Bool(false),
 }
 
-Assignee: Assignee<'input> = WithInfo<RawAssignee>;
+Assignee: Assignee<'input> = WithInfo<RawTermAssignee>;
+TypeAssignee: TypeAssignee<'input> = WithInfo<RawTypeAssignee>;
 
-RawAssignee: RawAssignee<'input> = {
-    "{" <CommaSep<(Ident (":" <Assignee>)?)>> "}" => RawAssignee::Record(<>.into_boxed_slice()),
-    Tuple<Assignee> => RawAssignee::Tuple(<>),
+RawAssignee<A>: RawAssignee<'input, A> = {
+    "{" <CommaSep<(Ident (":" <A>)?)>> "}" => RawAssignee::Record(<>.into_boxed_slice()),
+    Tuple<A> => RawAssignee::Tuple(<>),
     Ident => RawAssignee::Ident(<>),
+
+}
+RawTermAssignee: RawTermAssignee<'input> = {
+    <RawAssignee<Assignee>> => RawTermAssignee::Term(<>),
+    "type" <TypeAssignee> => RawTermAssignee::Type(<>),
+}
+RawTypeAssignee: RawTypeAssignee<'input> = {
+    <RawAssignee<TypeAssignee>> => RawTypeAssignee(<>),
 }
 
 TyBounds: TyBounds<'input> = {

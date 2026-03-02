@@ -28,6 +28,8 @@ pub enum RawTerm<'i> {
 
     Var(Ident<'i>),
 
+    Type(Type<'i>),
+
     Import(ImportPath<'i>),
 
     Fold(Option<Type<'i>>),
@@ -43,14 +45,22 @@ pub enum RawTerm<'i> {
     Bool(bool),
 }
 
-pub type Assignee<'i> = WithInfo<Span<'i>, RawAssignee<'i>>;
+pub type Assignee<'i> = WithInfo<Span<'i>, RawTermAssignee<'i>>;
+pub type TypeAssignee<'i> = WithInfo<Span<'i>, RawTypeAssignee<'i>>;
 
 #[derive(Eq, PartialEq, Debug)]
-pub enum RawAssignee<'i> {
-    Record(Box<[(Ident<'i>, Option<Assignee<'i>>)]>),
-    Tuple(Box<[Assignee<'i>]>),
+pub enum RawAssignee<'i, A> {
+    Record(Box<[(Ident<'i>, Option<A>)]>),
+    Tuple(Box<[A]>),
     Ident(Ident<'i>),
 }
+#[derive(Eq, PartialEq, Debug)]
+pub enum RawTermAssignee<'i> {
+    Term(RawAssignee<'i, Assignee<'i>>),
+    Type(TypeAssignee<'i>),
+}
+#[derive(Eq, PartialEq, Debug)]
+pub struct RawTypeAssignee<'i>(pub RawAssignee<'i, TypeAssignee<'i>>);
 
 #[derive(Eq, PartialEq, Debug)]
 pub struct TyBounds<'i> {

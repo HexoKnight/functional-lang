@@ -4,7 +4,10 @@ use itertools::{Itertools, zip_eq};
 
 use crate::{
     common::WithInfo,
-    reprs::common::{ArgStructure, Lvl, RawArgStructure},
+    reprs::common::{
+        ArgStructure, ArgTermStructure, ArgTypeStructure, Lvl, RawArgStructure,
+        RawArgTermStructure, Span,
+    },
     typing::{
         context::{TyArenaContext, TyVarContext},
         error::SpannedError,
@@ -53,6 +56,7 @@ impl TyConfig {
 
 #[derive(Copy, Clone)]
 enum TyVar<'a> {
+    Type(InternedType<'a>),
     Bounded(TyBounds<'a>),
     Rec,
 }
@@ -118,6 +122,7 @@ impl Type<'_> {
                     Variance::Constant
                 }
             }
+            Type::TyObj(ty) => ty.get_variance_of(ty_var_level),
             Type::Arr { arg, result } => arg
                 .get_variance_of(ty_var_level)
                 .invert()
@@ -145,19 +150,34 @@ fn ty_eq<'a>(ty1: InternedType<'a>, ty2: InternedType<'a>) -> bool {
 }
 
 impl<'a> Type<'a> {
-    fn destructure<'i>(
-        &self,
-        arg_structure: &ArgStructure<'i>,
+    fn destructure<'i, 's>(
+        &'a self,
+        arg_structure: &'s ArgStructure<'i>,
         ctx: &(impl TyArenaContext<'a> + TyVarContext<'a>),
-    ) -> Result<impl Iterator<Item = &Self>, TypeCheckError<'i>> {
-        fn inner<'i, 'a, 's>(
-            arg_structure: &ArgStructure<'i>,
-            ty: &'s Type<'a>,
+    ) -> Result<
+        (
+            ArgTermStructure<'i>,
+            Box<[(&'i str, &'a Self)]>,
+            Box<[(&'i str, &'a Self)]>,
+        ),
+        TypeCheckError<'i>,
+    > {
+        type TyVec<'i, 'a> = Vec<(&'i str, InternedType<'a>)>;
+
+        fn destructure_inner<'i, 'a, 's, A1, A2>(
+            span: Span<'i>,
+            arg_structure: &'s RawArgStructure<'i, A1>,
+            ty: InternedType<'a>,
+            tys: &mut TyVec<'i, 'a>,
+            mut inner: impl FnMut(
+                &'s A1,
+                InternedType<'a>,
+                &mut TyVec<'i, 'a>,
+            ) -> Result<WithInfo<Span<'i>, A2>, TypeCheckError<'i>>,
+            wrap: impl Fn(RawArgStructure<'i, WithInfo<Span<'i>, A2>>) -> A2,
             ctx: &(impl TyArenaContext<'a> + TyVarContext<'a>),
-            output: &mut impl FnMut(&'s Type<'a>),
-        ) -> Result<(), TypeCheckError<'i>> {
-            let WithInfo(span, arg_structure) = arg_structure;
-            match arg_structure {
+        ) -> Result<A2, TypeCheckError<'i>> {
+            let arg_structure = match arg_structure {
                 RawArgStructure::Record(st_fields) => {
                     let Type::Record(ty_fields) = ty else {
                         Err(SpannedError::new(
@@ -167,25 +187,30 @@ impl<'a> Type<'a> {
                                 ty = ty.display(ctx)?
                             ),
                             "",
-                            *span,
+                            span,
                         ))?
                     };
 
-                    st_fields.iter().try_for_each(|(l, st)| {
-                        if let Some(ty) = ty_fields.0.get(l) {
-                            inner(st, ty, ctx, output)
-                        } else {
-                            Err(SpannedError::new(
-                                "type mismatch: record-destructure missing field",
-                                format!(
-                                    "destructured record has field with label '{l}'\n\
-                                    while it's missing from it's type"
-                                ),
-                                "",
-                                *span,
-                            ))?
-                        }
-                    })?;
+                    RawArgStructure::Record(
+                        st_fields
+                            .iter()
+                            .map(|(l, st)| {
+                                if let Some(ty) = ty_fields.0.get(l) {
+                                    inner(st, ty, tys).map(|st| (*l, st))
+                                } else {
+                                    Err(SpannedError::new(
+                                        "type mismatch: record-destructure missing field",
+                                        format!(
+                                            "destructured record has field with label '{l}'\n\
+                                            while it's missing from it's type"
+                                        ),
+                                        "",
+                                        span,
+                                    ))?
+                                }
+                            })
+                            .try_collect()?,
+                    )
                 }
 
                 RawArgStructure::Tuple(st_elems) => {
@@ -197,7 +222,7 @@ impl<'a> Type<'a> {
                                 ty = ty.display(ctx)?
                             ),
                             "",
-                            *span,
+                            span,
                         ))?
                     };
 
@@ -211,20 +236,102 @@ impl<'a> Type<'a> {
                                 while it's type has {ty_len} elements"
                             ),
                             "",
-                            *span,
+                            span,
                         ))?;
                     }
-                    zip_eq(st_elems, ty_elems)
-                        .try_for_each(|(st, ty)| inner(st, ty, ctx, output))?;
+                    RawArgStructure::Tuple(
+                        zip_eq(st_elems, ty_elems)
+                            .map(|(st, ty)| inner(st, ty, tys))
+                            .try_collect()?,
+                    )
                 }
 
-                RawArgStructure::Var => output(ty),
-            }
-            Ok(())
+                RawArgStructure::Var => {
+                    tys.push((span.text(), ty));
+                    RawArgStructure::Var
+                }
+            };
+            Ok(wrap(arg_structure))
         }
-        let mut buffer = Vec::new();
-        inner(arg_structure, self, ctx, &mut |ty| buffer.push(ty))?;
-        Ok(buffer.into_iter())
+
+        fn destructure_term_inner<'i, 'a, 's>(
+            arg_structure: &'s ArgStructure<'i>,
+            ty: InternedType<'a>,
+            var_tys: &mut TyVec<'i, 'a>,
+            ty_vars: &mut TyVec<'i, 'a>,
+            ctx: &(impl TyArenaContext<'a> + TyVarContext<'a>),
+        ) -> Result<ArgTermStructure<'i>, TypeCheckError<'i>> {
+            let WithInfo(span, arg_structure) = arg_structure;
+
+            let arg_structure = match arg_structure {
+                RawArgTermStructure::Term(arg_structure) => destructure_inner(
+                    *span,
+                    arg_structure,
+                    ty,
+                    var_tys,
+                    |arg_structure, ty, var_tys| {
+                        destructure_term_inner(arg_structure, ty, var_tys, ty_vars, ctx)
+                    },
+                    RawArgTermStructure::Term,
+                    ctx,
+                )?,
+                RawArgTermStructure::Type(arg_structure) => {
+                    let Type::TyObj(ty) = ty else {
+                        Err(SpannedError::new(
+                            "type mismatch: type-destructure non-type",
+                            format!(
+                                "cannot type-destructure value of type {ty}",
+                                ty = ty.display(ctx)?
+                            ),
+                            "",
+                            *span,
+                        ))?
+                    };
+                    RawArgTermStructure::Type(destructure_type_inner(
+                        arg_structure,
+                        ty,
+                        ty_vars,
+                        ctx,
+                    )?)
+                }
+            };
+
+            Ok(WithInfo(*span, arg_structure))
+        }
+
+        fn destructure_type_inner<'i, 'a, 's>(
+            arg_structure: &'s ArgTypeStructure<'i>,
+            ty: InternedType<'a>,
+            tys: &mut TyVec<'i, 'a>,
+            ctx: &(impl TyArenaContext<'a> + TyVarContext<'a>),
+        ) -> Result<(), TypeCheckError<'i>> {
+            let WithInfo(span, arg_structure) = arg_structure;
+
+            destructure_inner(
+                *span,
+                &arg_structure.0,
+                ty,
+                tys,
+                |arg_structure, ty, tys| {
+                    Ok(WithInfo(
+                        *span,
+                        destructure_type_inner(arg_structure, ty, tys, ctx)?,
+                    ))
+                },
+                |_| (),
+                ctx,
+            )
+        }
+
+        let mut var_tys = Vec::new();
+        let mut ty_vars = Vec::new();
+        let arg_structure =
+            destructure_term_inner(arg_structure, self, &mut var_tys, &mut ty_vars, ctx)?;
+        Ok((
+            arg_structure,
+            var_tys.into_boxed_slice(),
+            ty_vars.into_boxed_slice(),
+        ))
     }
 
     fn try_map_ty_vars<E>(
@@ -255,6 +362,7 @@ impl<'a> Type<'a> {
                 result: result.try_map_ty_vars(f, level.deeper(), ctx)?,
             },
             Type::TyVar(ty_level) => return f(*ty_level, level),
+            Type::TyObj(ty) => Type::TyObj(ty.try_map_ty_vars(f, level, ctx)?),
             Type::Arr { arg, result } => Type::Arr {
                 arg: arg.try_map_ty_vars(f, level, ctx)?,
                 result: result.try_map_ty_vars(f, level, ctx)?,
@@ -352,6 +460,48 @@ impl<'a> Type<'a> {
             ctx,
         )
     }
+    /// substitutes all the `ty_var`s between `depth` (inclusive) and `depth + tys.len()` (exclusive)
+    fn substitute_ty_vars(
+        &'a self,
+        depth: Lvl,
+        tys: &[&'a Self],
+        ctx: &impl TyArenaContext<'a>,
+    ) -> &'a Self {
+        self.map_ty_vars(
+            |ty_level, level| {
+                let Some(deeper) = ty_level.get_deeper_than(depth) else {
+                    // not deeper so no translation necessary
+                    return ctx.intern(Type::TyVar(ty_level));
+                };
+                let ty = match deeper.get_or_beyond(tys) {
+                    Ok(ty) => ty,
+                    Err(beyond) => {
+                        // beyond the substituted vars so we translate down
+                        return ctx.intern(Type::TyVar(depth.deeper_by(beyond)));
+                    }
+                };
+                if depth == level {
+                    // same depth as originally declared so no substitution necessary
+                    return ty;
+                }
+                ty.map_ty_vars(
+                    |inner_ty_level, _inner_level| {
+                        ctx.intern(Type::TyVar(
+                            // depth <= level
+                            inner_ty_level.translate(depth, level).expect(
+                                "level within map_ty_vars is never \
+                                    shallower than the level passed in",
+                            ),
+                        ))
+                    },
+                    level,
+                    ctx,
+                )
+            },
+            depth,
+            ctx,
+        )
+    }
 
     // TODO: maybe ensure type safety by Type::Concrete(ConcreteType::{Arr, Enum, ...})
     /// Get the minimal concrete supertype
@@ -363,6 +513,7 @@ impl<'a> Type<'a> {
             Type::TyVar(level) => {
                 let (_, ty_var) = ctx.get_ty_var_unwrap(*level)?;
                 match ty_var {
+                    TyVar::Type(ty) => Ok(ty),
                     TyVar::Bounded(bounds) => bounds.get_upper(ctx).upper_concrete(ctx),
                     // we have a isorecursive view of recursive types so this is concrete
                     TyVar::Rec => Ok(self),
@@ -370,6 +521,7 @@ impl<'a> Type<'a> {
             }
             Type::TyAbs { .. }
             | Type::RecAbs { .. }
+            | Type::TyObj(_)
             | Type::Arr { .. }
             | Type::Enum(..)
             | Type::Record(..)
@@ -388,6 +540,7 @@ impl<'a> Type<'a> {
             Type::TyAbs { .. }
             | Type::RecAbs { .. }
             | Type::TyVar { .. }
+            | Type::TyObj(_)
             | Type::Arr { .. }
             | Type::Enum(..)
             | Type::Record(..)
@@ -404,6 +557,7 @@ impl<'a> Type<'a> {
             Type::TyAbs { .. }
             | Type::RecAbs { .. }
             | Type::TyVar { .. }
+            | Type::TyObj(_)
             | Type::Arr { .. }
             | Type::Enum(..)
             | Type::Record(..)
@@ -420,6 +574,7 @@ impl<'a> Type<'a> {
             Type::TyAbs { .. }
             | Type::RecAbs { .. }
             | Type::TyVar { .. }
+            | Type::TyObj(_)
             | Type::Arr { .. }
             | Type::Enum(..)
             | Type::Record(..)

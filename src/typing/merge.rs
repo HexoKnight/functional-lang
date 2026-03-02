@@ -160,6 +160,7 @@ fn merge<'a: 'inn, 'inn>(
                     )))?
                 };
             }
+            (Type::TyObj(ty1), Type::TyObj(ty2)) => Type::TyObj(merge2(ty1, ty2, join, ctx)?),
             (
                 Type::Arr {
                     arg: arg1,
@@ -247,6 +248,7 @@ fn merge<'a: 'inn, 'inn>(
                 Type::TyAbs { .. }
                 | Type::RecAbs { .. }
                 | Type::TyVar { .. }
+                | Type::TyObj(_)
                 | Type::Arr { .. }
                 | Type::Enum(..)
                 | Type::Record(..)

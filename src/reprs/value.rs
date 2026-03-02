@@ -6,7 +6,7 @@ use crate::{
     common::WithInfo,
     evaluation::ContextClosure,
     reprs::{
-        common::{ArgStructure, Label, Span},
+        common::{ArgTermStructure, Label, Span},
         typed_ir,
     },
 };
@@ -25,7 +25,7 @@ pub enum RawValue<'i, Closure> {
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Func<'i, Closure> {
-    Abs(ArgStructure<'i>, Closure),
+    Abs(ArgTermStructure<'i>, Closure),
     Identity,
 
     EnumCons(Label<'i>),
