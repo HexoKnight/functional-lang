@@ -650,8 +650,12 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
             }
             uir::RawTerm::Import(WithInfo(span, import_id)) => (
                 tir::RawTerm::Import(*import_id),
-                ctx.get_import_ty(*import_id)
-                    .ok_or_else(|| IllegalError::new("", Some(*span)))?,
+                ctx.get_import_ty(*import_id).ok_or_else(|| {
+                    IllegalError::new(
+                        format!("import {:?} not found during type checking", import_id),
+                        Some(*span),
+                    )
+                })?,
             ),
             uir::RawTerm::Fold(rec) => {
                 let rec = rec.eval(ctx)?;
