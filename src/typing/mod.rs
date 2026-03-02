@@ -54,6 +54,8 @@ impl TyConfig {
     }
 }
 
+/// anytime this is accessed, we must make sure any
+/// referenced types are valid in the current context
 #[derive(Copy, Clone)]
 enum TyVar<'a> {
     Type(InternedType<'a>),
@@ -503,6 +505,25 @@ impl<'a> Type<'a> {
         )
     }
 
+    fn deepen(
+        &'a self,
+        prev_level: Lvl,
+        new_level: Lvl,
+        ctx: &impl TyArenaContext<'a>,
+    ) -> &'a Self {
+        self.map_ty_vars_no_level(
+            |ty_level| {
+                let new_ty_level = if let Some(deeper) = ty_level.get_deeper_than(prev_level) {
+                    new_level.deeper_by(deeper)
+                } else {
+                    ty_level
+                };
+                ctx.intern(Type::TyVar(new_ty_level))
+            },
+            ctx,
+        )
+    }
+
     // TODO: maybe ensure type safety by Type::Concrete(ConcreteType::{Arr, Enum, ...})
     /// Get the minimal concrete supertype
     fn upper_concrete(
@@ -513,8 +534,11 @@ impl<'a> Type<'a> {
             Type::TyVar(level) => {
                 let (_, ty_var) = ctx.get_ty_var_unwrap(*level)?;
                 match ty_var {
-                    TyVar::Type(ty) => Ok(ty),
-                    TyVar::Bounded(bounds) => bounds.get_upper(ctx).upper_concrete(ctx),
+                    TyVar::Type(ty) => Ok(ty.deepen(*level, ctx.next_ty_var_level(), ctx)),
+                    TyVar::Bounded(bounds) => bounds
+                        .get_upper(ctx)
+                        .deepen(*level, ctx.next_ty_var_level(), ctx)
+                        .upper_concrete(ctx),
                     // we have a isorecursive view of recursive types so this is concrete
                     TyVar::Rec => Ok(self),
                 }

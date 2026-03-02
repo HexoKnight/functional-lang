@@ -502,6 +502,8 @@ fn ty_app() {
     evaluate_check_type(r"(?T ?R >T \r:R r)[!]", "[R >!] R -> R");
     evaluate_check_type(r"(?T ?R >T \r:R r)[!][bool]", "bool -> bool");
     evaluate_check_type(r"(?T ?R >T \r:R r)[!][bool] true", "bool");
+
+    evaluate_check_type(r"?A<([B] B) \a:A a[()]", "[A <[B] B] A -> ()");
 }
 
 #[test]
@@ -652,6 +654,8 @@ fn type_arg_inference() {
         "([T] [R >T] R -> R) -> bool",
     );
     evaluate_check_type(r"(?T ?R >T \r:R r)[!] true", "bool");
+
+    evaluate_check_type(r"(?T \t:T t) .\id id (?A \a:A ())", "[A] A -> ()");
 }
 
 #[test]
@@ -746,4 +750,6 @@ fn type_objects() {
         r"type {asd: bool, a: ((), {})} .\type {a, asd} \asd:asd asd",
         "bool -> bool",
     );
+
+    evaluate_check_type(r"type [B] B .\type A \a:A a[()]", "([B] B) -> ()");
 }

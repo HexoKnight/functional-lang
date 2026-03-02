@@ -184,6 +184,9 @@ mod context {
             }
         }
 
+        pub(super) fn next_expected_ty_var_level(&self) -> Lvl {
+            Lvl::get_depth(&self.expected_ty_var_stack)
+        }
         pub(super) fn next_found_ty_var_level(&self) -> Lvl {
             Lvl::get_depth(&self.found_ty_var_stack)
         }
@@ -306,24 +309,38 @@ mod inference {
         ) -> Result<(), ContextError<'static>> {
             fn map_vars<'a>(
                 ty: InternedType<'a>,
-                get_bound: impl Fn(TyBounds<'a>) -> InternedType<'a>,
+                get_bound: impl Fn(TyBounds<'a>) -> InternedType<'a> + Copy,
                 level: Lvl,
                 ctx: &Context<'a, '_>,
-            ) -> Result<InternedType<'a>, IllegalError<'static>> {
-                ty.try_map_ty_vars_no_level::<IllegalError<'static>>(
+            ) -> Result<InternedType<'a>, ContextError<'static>> {
+                ty.try_map_ty_vars_no_level::<ContextError<'static>>(
                     &mut |level_expected| {
                         // we convert from the expected stack to the found stack
                         let level_found = ctx.map_expected_level(level_expected)?;
-                        if level_found.deeper_than(level)
+                        if level_found.deeper_than(level) {
                             // replace any bounded/inferred ty_vars bound more recently than the
                             // current (inclusive) with their upper/lower bound
                             // this weakens our inferencing ability but prevents cyclic bounds that
                             // we currently can't deal with
-                            && let (_, found) = ctx.get_found_ty_var_unwrap(level_found)?
-                            // `Inferred` are converted to `Bounded` so this catches both
-                            && let TyVar::Bounded(bounds) = found.without_inferred()
-                        {
-                            Ok(get_bound(bounds))
+                            if let Some((_, found)) = ctx.get_found_ty_var(level_found) {
+                                match found.without_inferred() {
+                                    // `Inferred` are converted to `Bounded` so this catches both
+                                    TyVar::Bounded(bounds) => {
+                                        map_vars(get_bound(bounds), get_bound, level, ctx)
+                                    }
+                                    TyVar::Type(ty) => map_vars(ty, get_bound, level, ctx),
+                                    TyVar::Rec => Err(PlainContextError::new(
+                                        "unable to satisfy constraint \
+                                        with recursive type variable",
+                                    ))?,
+                                }
+                            } else {
+                                Ok(ctx.intern(Type::TyVar(
+                                    level_found
+                                        .translate(ctx.next_found_ty_var_level(), level)
+                                        .expect("level_found > next_found_ty_var_level"),
+                                )))
+                            }
                         } else {
                             Ok(ctx.intern(Type::TyVar(level_found)))
                         }
@@ -399,8 +416,8 @@ mod inference {
             .try_wrap_error(|| {
                 Ok(PlainContextError::new(format!(
                     "unable to satisfy constraints:\n\
-                        upper: {}\n\
-                        lower: {}",
+                    upper: {}\n\
+                    lower: {}",
                     upper.display(ctx.fnd_ctx())?,
                     lower.display(ctx.fnd_ctx())?
                 )))
@@ -618,8 +635,10 @@ fn expect_type_rec<'a>(
         let ty = match ty_var {
             InferenceTyVar::TyVar(TyVar::Type(ty)) => {
                 if is_found {
+                    let ty = ty.deepen(level, ctx.next_found_ty_var_level(), ctx);
                     expect_type_rec(expected, ty, subtype, ty_config, ctx)
                 } else {
+                    let ty = ty.deepen(level, ctx.next_expected_ty_var_level(), ctx);
                     expect_type_rec(ty, found, subtype, ty_config, ctx)
                 }?
             }
@@ -634,10 +653,16 @@ fn expect_type_rec<'a>(
                 } else {
                     bounds.get_lower(ctx)
                 };
-                let var_ctx = if is_found {
-                    ctx.fnd_ctx()
+                let (bound, var_ctx) = if is_found {
+                    (
+                        bound.deepen(level, ctx.next_found_ty_var_level(), ctx),
+                        ctx.fnd_ctx(),
+                    )
                 } else {
-                    ctx.exp_ctx()
+                    (
+                        bound.deepen(level, ctx.next_expected_ty_var_level(), ctx),
+                        ctx.exp_ctx(),
+                    )
                 };
                 expect_type_rec(
                     if is_found { expected } else { bound },
