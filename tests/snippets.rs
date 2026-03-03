@@ -753,3 +753,11 @@ fn type_objects() {
 
     evaluate_check_type(r"type [B] B .\type A \a:A a[()]", "([B] B) -> ()");
 }
+
+#[test]
+fn type_level_ty_app() {
+    type_check_failure(r"type [T] T [bool]");
+    evaluate_check_type(r"type ([T] (T, T)) [bool]", "type (bool, bool)");
+    evaluate_check_type(r"type ([T] (T, T)) [[A] A]", "type ([A] A, [A] A)");
+    evaluate_check_type(r"type ([T] [U] (T, U)) [[A] A]", "type [U] ([A] A, U)");
+}

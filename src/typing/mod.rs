@@ -9,8 +9,9 @@ use crate::{
         RawArgTermStructure, Span,
     },
     typing::{
-        context::{TyArenaContext, TyVarContext},
-        error::SpannedError,
+        context::{ContextInner, TyArenaContext, TyVarContext},
+        error::{SpannedError, TypeCheckResult},
+        subtyping::expect_type,
         ty::{TyBounds, TyDisplay, Type},
     },
 };
@@ -336,6 +337,71 @@ impl<'a> Type<'a> {
         ))
     }
 
+    fn apply_ty_arg<'i, 'inn>(
+        &'a self,
+        self_span: Span<'i>,
+        arg: &'a Self,
+        arg_span: Span<'i>,
+        ty_config: TyConfig,
+        ctx: &(
+             impl TyArenaContext<'a, Inner = &'inn ContextInner<'a>>
+             + TyVarContext<'a, TyVar = TyVar<'a>>
+         ),
+    ) -> Result<&'a Self, TypeCheckError<'i>>
+    where
+        'a: 'inn,
+    {
+        let Type::TyAbs {
+            name: _,
+            bounds,
+            result,
+        } = self.upper_concrete(ctx)?
+        else {
+            Err(SpannedError::new(
+                "type mismatch",
+                format!(
+                    "cannot apply a type argument to type: `{}`",
+                    self.display(ctx)?
+                ),
+                "",
+                self_span,
+            ))?
+        };
+        // bounds can't be unknown but anyway
+        if let Some(upper) = bounds.get_upper(ctx).known_not_any() {
+            expect_type(upper, arg, true, ty_config.infer_ty_args(false), ctx).try_wrap_error(
+                || {
+                    Ok(SpannedError::new(
+                        "type arg out of bounds",
+                        format!(
+                            "type must be subtype of upper bound: `{}`",
+                            upper.display(ctx)?
+                        ),
+                        "unsatisfied type arg upper bound",
+                        arg_span,
+                    ))
+                },
+            )?;
+        }
+        if let Some(lower) = bounds.get_lower(ctx).known_not_never() {
+            expect_type(lower, arg, false, ty_config.infer_ty_args(false), ctx).try_wrap_error(
+                || {
+                    Ok(SpannedError::new(
+                        "type arg out of bounds",
+                        format!(
+                            "type must be supertype of lower bound: `{}`",
+                            lower.display(ctx)?
+                        ),
+                        "unsatisfied type arg lower bound",
+                        arg_span,
+                    ))
+                },
+            )?;
+        }
+        let ty = result.substitute_ty_var(ctx.next_ty_var_level(), arg, ctx);
+        Ok(ty)
+    }
+
     fn try_map_ty_vars<E>(
         &'a self,
         f: &mut impl FnMut(Lvl, Lvl) -> Result<&'a Self, E>,
@@ -423,34 +489,18 @@ impl<'a> Type<'a> {
 
     fn substitute_ty_var(
         &'a self,
-        depth: Lvl,
+        ty_old_level: Lvl,
         ty: &'a Self,
         ctx: &impl TyArenaContext<'a>,
     ) -> &'a Self {
         self.map_ty_vars(
             |ty_level, level| {
-                if ty_level == depth {
-                    return if depth == level {
-                        // no substitution necessary
-                        ty
-                    } else {
-                        ty.map_ty_vars(
-                            |inner_ty_level, _inner_level| {
-                                ctx.intern(Type::TyVar(
-                                    // depth <= level
-                                    inner_ty_level
-                                        .translate(depth, level)
-                                        .expect("level within map_ty_vars is never shallower than the level passed in"),
-                                ))
-                            },
-                            level,
-                            ctx,
-                        )
-                    };
+                if ty_level == ty_old_level {
+                    return ty.deepen(ty_old_level, level, ctx);
                 }
                 let new_level = match ty_level.shallower() {
                     // deeper than replaced but not equal (due to prev arm)
-                    Some(shallower) if ty_level.deeper_than(depth) => shallower,
+                    Some(shallower) if ty_level.deeper_than(ty_old_level) => shallower,
                     // either:
                     // - shallowest so could not be strictly deeper
                     // - not deeper
@@ -458,7 +508,7 @@ impl<'a> Type<'a> {
                 };
                 ctx.intern(Type::TyVar(new_level))
             },
-            depth,
+            ty_old_level,
             ctx,
         )
     }
@@ -511,6 +561,9 @@ impl<'a> Type<'a> {
         new_level: Lvl,
         ctx: &impl TyArenaContext<'a>,
     ) -> &'a Self {
+        if prev_level == new_level {
+            return self;
+        }
         self.map_ty_vars_no_level(
             |ty_level| {
                 let new_ty_level = if let Some(deeper) = ty_level.get_deeper_than(prev_level) {

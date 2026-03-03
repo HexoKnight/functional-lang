@@ -609,52 +609,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                 let (abs_term, abs) = abs_term.type_check(Some(check_abs), ty_config, ctx)?;
                 let WithInfo(abs_info, abs_term) = *abs_term;
 
-                let Type::TyAbs {
-                    name: _,
-                    bounds,
-                    result,
-                } = abs
-                else {
-                    Err(SpannedError::new(
-                        "type mismatch",
-                        format!(
-                            "cannot apply a type argument to type: `{}`",
-                            abs.display(ctx)?
-                        ),
-                        "",
-                        abs_info,
-                    ))?
-                };
-                // bounds can't be unknown but anyway
-                if let Some(upper) = bounds.get_upper(ctx).known_not_any() {
-                    expect_type(upper, arg, true, ty_config.infer_ty_args(false), ctx)
-                        .try_wrap_error(|| {
-                            Ok(SpannedError::new(
-                                "type arg out of bounds",
-                                format!(
-                                    "type must be subtype of upper bound: `{}`",
-                                    upper.display(ctx)?
-                                ),
-                                "unsatisfied type arg upper bound",
-                                arg_term.0,
-                            ))
-                        })?;
-                }
-                if let Some(lower) = bounds.get_lower(ctx).known_not_never() {
-                    expect_type(lower, arg, false, ty_config.infer_ty_args(false), ctx)
-                        .try_wrap_error(|| {
-                            Ok(SpannedError::new(
-                                "type arg out of bounds",
-                                format!(
-                                    "type must be supertype of lower bound: `{}`",
-                                    lower.display(ctx)?
-                                ),
-                                "unsatisfied type arg lower bound",
-                                arg_term.0,
-                            ))
-                        })?;
-                }
-                let ty = result.substitute_ty_var(ctx.next_ty_var_level(), arg, ctx);
+                let ty = abs.apply_ty_arg(abs_info, arg, arg_term.0, ty_config, ctx)?;
                 (abs_term, ty)
             }
             uir::RawTerm::Var(index) => {
@@ -739,7 +694,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     let Type::RecAbs {
                         name: _,
                         result: rec_body,
-                    } = rec
+                    } = rec.upper_concrete(ctx)?
                     else {
                         Err(SpannedError::new(
                             "type mismatch: expected recursive type",

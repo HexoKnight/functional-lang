@@ -68,9 +68,10 @@ pub Term: Term<'input> = WithInfo<RawTerm>;
 
 RawTerm: RawTerm<'input> = {
     Abs,
-    App<Abs>,
-    Dot<Abs>,
-    SimpleTerm,
+    TyApp,
+    App<Abs, TyTerm>,
+    Dot<Abs, TyTerm>,
+    TyTerm,
 }
 
 Abs: RawTerm<'input> = {
@@ -78,33 +79,47 @@ Abs: RawTerm<'input> = {
     "?" <arg:Ident> <bounds:TyBounds> <body:Box<Term>> => RawTerm::TyAbs { arg, bounds, body },
 }
 
-App<Abs>: RawTerm<'input> = {
-    <func:Box<WithInfo<AppLeft>>> <arg:Box<WithInfo<AppRight<Abs>>>> => RawTerm::App { func, arg },
-    <func:Box<WithInfo<AppLeft>>> "[" <arg:Box<Type>> "]" => RawTerm::TyApp { func, arg },
+TyApp: RawTerm<'input> = {
+    <func:Box<WithInfo<TyAppLeft>>> "[" <arg:Box<Type>> "]" => RawTerm::TyApp { func, arg },
+}
+App<Abs, Term>: RawTerm<'input> = {
+    <func:Box<WithInfo<AppLeft>>> <arg:Box<WithInfo<AppRight<Abs, Term>>>> => RawTerm::App { func, arg },
 }
 
-Dot<Abs>: RawTerm<'input> = {
-    <arg:Box<WithInfo<DotLeft>>> "." <func:Box<WithInfo<DotRight<Abs>>>> => RawTerm::App { func, arg },
+Dot<Abs, Term>: RawTerm<'input> = {
+    <arg:Box<WithInfo<DotLeft>>> "." <func:Box<WithInfo<DotRight<Abs, Term>>>> => RawTerm::App { func, arg },
 }
 
 NoAbs: RawTerm<'input> = {}
-AppLeft       = {      App<NoAbs>, Dot<NoAbs>, SimpleTerm }
-AppRight<Abs> = { Abs,             Dot<Abs>,   SimpleTerm }
-DotLeft       = {                  Dot<NoAbs>, SimpleTerm }
-DotRight<Abs> = { Abs,                         SimpleTerm }
+TyAppLeft           = {      TyApp, App<NoAbs, NoTyTerm>, Dot<NoAbs, NoTyTerm>, NoTyTerm }
+AppLeft             = {      TyApp, App<NoAbs,   TyTerm>, Dot<NoAbs,   TyTerm>,   TyTerm }
+AppRight<Abs, Term> = { Abs,                              Dot<  Abs,     Term>,     Term }
+DotLeft             = {                                   Dot<NoAbs,   TyTerm>,   TyTerm }
+DotRight<Abs, Term> = { Abs,                                                        Term }
 
+// terms that can end in a `Type`
+TyTerm: RawTerm<'input> = {
+    "type" <Type> => RawTerm::Type(<>),
+
+    "fold" <(":" <Type>)?> => RawTerm::Fold(<>),
+    "unfold" <(":" <Type>)?> => RawTerm::Unfold(<>),
+
+    SimpleTerm,
+}
+// terms that cannot end in a `Type`
+NoTyTerm: RawTerm<'input> = {
+    "fold" => RawTerm::Fold(None),
+    "unfold" => RawTerm::Unfold(None),
+
+    SimpleTerm,
+}
 SimpleTerm: RawTerm<'input> = {
     // TODO: capture the inner info instead
     "(" <RawTerm> ")",
 
     Ident => RawTerm::Var(<>),
 
-    "type" <Type> => RawTerm::Type(<>),
-
     "import" <ImportPath> => RawTerm::Import(<>),
-
-    "fold" <(":" <Type>)?> => RawTerm::Fold(<>),
-    "unfold" <(":" <Type>)?> => RawTerm::Unfold(<>),
 
     "enum" <(":" <Type>)?> <Ident> => RawTerm::Enum(<>),
     "match" <ty:(":" <Type>)?> "{" <arms:CommaSep<(Ident Term)>> "}" => RawTerm::Match(ty, arms.into_boxed_slice()),
@@ -148,14 +163,31 @@ Tuple<T>: Box<[T]> = {
 Type: Type<'input> = WithInfo<RawType>;
 
 RawType: RawType<'input> = {
-    <arg:Box<WithInfo<SimpleType>>> "->" <result:Box<Type>> => RawType::Arr { arg, result },
-
-    "[" <arg:Ident> <bounds:Box<TyBounds>> "]" <result:Box<Type>> => RawType::TyAbs { arg, bounds, result },
-
-    "rec" <arg:Ident> <result:Box<Type>> => RawType::RecAbs { arg, result },
-
+    Ty_Arr,
+    Ty_TyAbs,
+    Ty_TyApp,
+    Ty_RecAbs,
     SimpleType,
 }
+
+Ty_Arr: RawType<'input> = {
+    <arg:Box<WithInfo<Ty_ArrLeft>>> "->" <result:Box<Type>> => RawType::Arr { arg, result },
+}
+Ty_TyAbs: RawType<'input> = {
+    "[" <arg:Ident> <bounds:Box<TyBounds>> "]" <result:Box<Type>> => RawType::TyAbs { arg, bounds, result },
+}
+Ty_TyApp: RawType<'input> = {
+    <abs:Box<WithInfo<SimpleType>>> "[" <arg:Box<Type>> "]" => RawType::TyApp { abs, arg },
+}
+Ty_RecAbs: RawType<'input> = {
+    "rec" <arg:Ident> <result:Box<Type>> => RawType::RecAbs { arg, result },
+}
+
+Ty_ArrLeft = {
+    Ty_TyApp,
+    SimpleType
+}
+
 SimpleType: RawType<'input> = {
     // TODO: capture the inner info instead
     "(" <RawType> ")",

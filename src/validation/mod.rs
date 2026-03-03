@@ -411,6 +411,10 @@ impl<'i> Validate<'i> for ast::Type<'i> {
                 bounds: bounds.validate(ctx)?,
                 result: result.validate(&ctx.push_ty_vars(once(arg.0.text())))?,
             },
+            ast::RawType::TyApp { abs, arg } => ir::RawType::TyApp {
+                abs: abs.validate(ctx)?,
+                arg: arg.validate(ctx)?,
+            },
             ast::RawType::RecAbs { arg, result } => ir::RawType::RecAbs {
                 name: arg.0.text(),
                 result: result.validate(&ctx.push_ty_vars(once(arg.0.text())))?,

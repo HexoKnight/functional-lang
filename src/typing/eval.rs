@@ -57,6 +57,22 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
                     result: result.eval(&ctx.push_ty_var(name, TyVar::Bounded(bounds)))?,
                 }
             }
+            uir::RawType::TyApp { abs, arg } => {
+                let abs_span = abs.0;
+                let arg_span = arg.0;
+                let abs = abs.eval(ctx)?;
+                let arg = arg.eval(ctx)?;
+
+                let ty = abs.apply_ty_arg(
+                    abs_span,
+                    arg,
+                    arg_span,
+                    TyConfig::ty_inference_disabled(),
+                    ctx,
+                )?;
+
+                return Ok(ty);
+            }
             uir::RawType::RecAbs { name, result } => {
                 let level = ctx.next_ty_var_level();
                 let result = result.eval(&ctx.push_ty_var(name, TyVar::Rec))?;

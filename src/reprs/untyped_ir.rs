@@ -66,6 +66,10 @@ pub enum RawType<'i> {
         bounds: Box<TyBounds<'i>>,
         result: Box<Type<'i>>,
     },
+    TyApp {
+        abs: Box<Type<'i>>,
+        arg: Box<Type<'i>>,
+    },
 
     RecAbs {
         name: &'i str,

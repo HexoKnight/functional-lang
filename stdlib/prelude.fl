@@ -1,17 +1,25 @@
 type rec N enum { succ: N, zero: () }
     .\type nat
 
+type [T] rec L enum { cons: (T, L), nil: () }
+    .\type list
+
+type [T] enum { some: T, none: () }
+    .\type option
+
 (?T enum: T some) .\some
 (   enum none ()) .\none
 
 (() . enum nil . fold)
     .\nil: rec L enum {nil: ()}
 (?T \t \l (t, l) . enum cons . fold)
-    .\cons: [T] T -> (rec L enum {cons: (T, L), nil: ()}) -> rec L enum {cons: (T, L), nil: ()}
+    .\cons: [T] T -> list[T] -> list[T]
 
 {
     ty: type {
-        nat: nat
+        nat: nat,
+        list: list,
+        option: option,
     },
 
     some: some,
@@ -20,10 +28,14 @@ type rec N enum { succ: N, zero: () }
     nil: nil,
     cons: cons,
 
-    map: ?T \e: enum { some: T, none: () } ?U \f: T -> U
-        e.match {
-            some \t:T some (f t),
-            none \():() none,
+    succ: \n: nat
+        fold:nat (enum succ n)
+    ,
+
+    map: ?T \o: option[T] ?U \f: T -> U
+        o.match {
+            some \t some (f t),
+            none \() none,
         }
     ,
 
