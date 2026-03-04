@@ -2,7 +2,7 @@ use itertools::{Itertools, zip_eq};
 
 use crate::typing::{
     InternedType, TyConfig, TyVar,
-    context::{ContextInner, TyArenaContext, TyVarContext},
+    context::TyArenaContext,
     error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
     ty::{TyBounds, TyDisplay, Type},
     ty_eq,
@@ -18,23 +18,12 @@ mod context {
         reprs::common::Lvl,
         typing::{
             TyVar,
-            context::{ContextInner, Stack, TyArenaContext, TyVarContext, TyVarStack},
+            context::{ContextInner, Stack, TyArenaContext, TyVarStack},
             error::IllegalError,
             subtyping::inference::{InferenceTyVar, TyConstraint},
             ty::TyBounds,
         },
     };
-
-    // unfortunately no trait aliases
-    macro_rules! ctx {
-        () => {
-            ctx!('a, 'inn)
-        };
-        ($a:lifetime, $inn:lifetime) => {
-             impl TyArenaContext<$a, Inner = &$inn ContextInner<$a>>
-                + TyVarContext<$a, TyVar = TyVar<$a>>
-        };
-    }
 
     #[must_use]
     #[derive(Clone)]
@@ -50,7 +39,7 @@ mod context {
     }
 
     impl<'a, 'inn> Context<'a, 'inn> {
-        pub(super) fn from(ctx: &ctx!()) -> Self {
+        pub(super) fn from(ctx: &ctx!(arena 'inn; ty_var)) -> Self {
             let ty_var_stack: Vec<_> = ctx
                 .get_ty_vars()
                 .map(|(name, ty_var)| (name, InferenceTyVar::TyVar(ty_var)))
@@ -586,7 +575,7 @@ pub(super) fn expect_type<'a: 'inn, 'inn>(
     found: InternedType<'a>,
     subtype: bool,
     ty_config: TyConfig,
-    ctx: &ctx!(),
+    ctx: &ctx!(arena 'inn; ty_var),
 ) -> Result<InternedType<'a>, ContextError<'static>> {
     expect_type_rec(expected, found, subtype, ty_config, &Context::from(ctx))
 }
@@ -1013,7 +1002,7 @@ impl<'a> TyBounds<'a> {
         expected: &Self,
         found: &Self,
         encloses: bool,
-        ctx: &ctx!(),
+        ctx: &ctx!(arena 'inn; ty_var),
     ) -> Result<(), ContextError<'static>>
     where
         'a: 'inn,

@@ -4,21 +4,12 @@ use crate::{
     common::{hashmap_intersection, hashmap_union},
     typing::{
         InternedType, TyConfig, TyVar,
-        context::{ContextInner, TyArenaContext, TyVarContext},
         error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
         subtyping::expect_type,
         ty::{TyBounds, TyDisplay, Type},
         ty_eq,
     },
 };
-
-// unfortunately no trait aliases
-macro_rules! ctx {
-    () => {
-         impl TyArenaContext<'a, Inner = &'inn ContextInner<'a>>
-            + TyVarContext<'a, TyVar = TyVar<'a>>
-    };
-}
 
 /// `join` specifies whether joining or meeting types.
 ///
@@ -33,13 +24,13 @@ macro_rules! ctx {
 fn merge<'a: 'inn, 'inn>(
     types: impl IntoIterator<Item = InternedType<'a>>,
     join: bool,
-    ctx: &ctx!(),
+    ctx: &ctx!(arena 'inn; ty_var),
 ) -> Result<InternedType<'a>, ContextError<'static>> {
     fn merge2<'a: 'inn, 'inn>(
         ty1: InternedType<'a>,
         ty2: InternedType<'a>,
         join: bool,
-        ctx: &ctx!(),
+        ctx: &ctx!(arena 'inn; ty_var),
     ) -> Result<InternedType<'a>, ContextError<'static>> {
         // these checks are meant as optimisations, and shouldn't be necessary for correctness
         if ty_eq(ty1, ty2) {
@@ -334,7 +325,7 @@ fn merge<'a: 'inn, 'inn>(
 /// information (they can manually coerce their types to any beforehand if they so wish).
 pub(super) fn join<'a: 'inn, 'inn>(
     types: impl IntoIterator<Item = InternedType<'a>>,
-    ctx: &ctx!(),
+    ctx: &ctx!(arena 'inn; ty_var),
 ) -> Result<InternedType<'a>, ContextError<'static>> {
     merge(types, true, ctx)
 }
@@ -355,7 +346,7 @@ pub(super) fn join<'a: 'inn, 'inn>(
 #[allow(dead_code)]
 pub(super) fn meet<'a: 'inn, 'inn>(
     types: impl IntoIterator<Item = InternedType<'a>>,
-    ctx: &ctx!(),
+    ctx: &ctx!(arena 'inn; ty_var),
 ) -> Result<InternedType<'a>, ContextError<'static>> {
     merge(types, false, ctx)
 }

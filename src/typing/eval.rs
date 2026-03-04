@@ -7,28 +7,19 @@ use crate::{
     reprs::untyped_ir as uir,
     typing::{
         InternedType, TyConfig, TyVar, Variance,
-        context::{ContextInner, TyArenaContext, TyVarContext},
         error::{SpannedError, TypeCheckError, TypeCheckResult},
         subtyping::expect_type,
         ty::{TyBounds, Type},
     },
 };
 
-// unfortunately no trait aliases
-macro_rules! ctx {
-    () => {
-        ctx!('a, 'inn)
-    };
-    ($a:lifetime, $inn:lifetime) => {
-         impl TyArenaContext<$a, Inner = &$inn ContextInner<$a>>
-            + TyVarContext<$a, TyVar = TyVar<$a>>
-    };
-}
-
 pub(super) trait TyEval<'i: 'a, 'a> {
     type Evaled;
 
-    fn eval<'inn>(&self, ctx: &ctx!()) -> Result<Self::Evaled, TypeCheckError<'i>>
+    fn eval<'inn>(
+        &self,
+        ctx: &ctx!(arena 'inn; ty_var),
+    ) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn;
 }
@@ -36,7 +27,7 @@ pub(super) trait TyEval<'i: 'a, 'a> {
 impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
     type Evaled = InternedType<'a>;
 
-    fn eval<'inn>(&self, ctx: &ctx!()) -> Result<Self::Evaled, TypeCheckError<'i>>
+    fn eval<'inn>(&self, ctx: &ctx!(arena 'inn; ty_var)) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn,
     {
@@ -130,7 +121,7 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
 impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::TyBounds<'i> {
     type Evaled = TyBounds<'a>;
 
-    fn eval<'inn>(&self, ctx: &ctx!()) -> Result<Self::Evaled, TypeCheckError<'i>>
+    fn eval<'inn>(&self, ctx: &ctx!(arena 'inn; ty_var)) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn,
     {
@@ -169,7 +160,7 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::TyBounds<'i> {
 impl<'i: 'a, 'a, T: TyEval<'i, 'a>> TyEval<'i, 'a> for Option<T> {
     type Evaled = Option<T::Evaled>;
 
-    fn eval<'inn>(&self, ctx: &ctx!()) -> Result<Self::Evaled, TypeCheckError<'i>>
+    fn eval<'inn>(&self, ctx: &ctx!(arena 'inn; ty_var)) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn,
     {

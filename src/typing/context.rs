@@ -8,6 +8,28 @@ use crate::{
     typing::{InternedType, error::IllegalError, ty::Type},
 };
 
+// unfortunately no trait aliases
+macro_rules! ctx {
+    ($([$($bounds:tt)*])* | arena $($inn:lifetime)? $(; $($rest:tt)+)?) => {
+        ctx!($([$($bounds)*])* [
+            $crate::typing::context::TyArenaContext<'a $(, Inner = &$inn $crate::typing::context::ContextInner<'a>)?>
+        ] | $($($rest)+)?)
+    };
+    ($([$($bounds:tt)*])* | ty_var $(; $($rest:tt)+)?) => {
+        ctx!($([$($bounds)*])* [
+            $crate::typing::context::TyVarContext<'a, TyVar = $crate::typing::TyVar<'a>>
+        ] | $($($rest)+)?)
+    };
+    ($([$($bounds:tt)*])* |) => {
+        impl $($($bounds)* +)*
+    };
+    ($([$($bounds:tt)*])* | $($invalid:tt)+) => {
+    };
+    ($($args:tt)*) => {
+        ctx!(| $($args)*)
+    };
+}
+
 // doesn't suffer from the same dropck issues as self references
 // do not (currently) pass through this type
 /// Cheaply cloneable (hopefully) append-only stack

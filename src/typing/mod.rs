@@ -9,7 +9,7 @@ use crate::{
         RawArgTermStructure, Span,
     },
     typing::{
-        context::{ContextInner, TyArenaContext, TyVarContext},
+        context::TyArenaContext,
         error::{SpannedError, TypeCheckResult},
         subtyping::expect_type,
         ty::{TyBounds, TyDisplay, Type},
@@ -17,6 +17,7 @@ use crate::{
 };
 
 mod checking;
+#[macro_use]
 mod context;
 mod error;
 mod eval;
@@ -156,7 +157,7 @@ impl<'a> Type<'a> {
     fn destructure<'i, 's>(
         &'a self,
         arg_structure: &'s ArgStructure<'i>,
-        ctx: &(impl TyArenaContext<'a> + TyVarContext<'a>),
+        ctx: &ctx!(arena; ty_var),
     ) -> Result<
         (
             ArgTermStructure<'i>,
@@ -178,7 +179,7 @@ impl<'a> Type<'a> {
                 &mut TyVec<'i, 'a>,
             ) -> Result<WithInfo<Span<'i>, A2>, TypeCheckError<'i>>,
             wrap: impl Fn(RawArgStructure<'i, WithInfo<Span<'i>, A2>>) -> A2,
-            ctx: &(impl TyArenaContext<'a> + TyVarContext<'a>),
+            ctx: &ctx!(arena; ty_var),
         ) -> Result<A2, TypeCheckError<'i>> {
             let arg_structure = match arg_structure {
                 RawArgStructure::Record(st_fields) => {
@@ -262,7 +263,7 @@ impl<'a> Type<'a> {
             ty: InternedType<'a>,
             var_tys: &mut TyVec<'i, 'a>,
             ty_vars: &mut TyVec<'i, 'a>,
-            ctx: &(impl TyArenaContext<'a> + TyVarContext<'a>),
+            ctx: &ctx!(arena; ty_var),
         ) -> Result<ArgTermStructure<'i>, TypeCheckError<'i>> {
             let WithInfo(span, arg_structure) = arg_structure;
 
@@ -306,7 +307,7 @@ impl<'a> Type<'a> {
             arg_structure: &'s ArgTypeStructure<'i>,
             ty: InternedType<'a>,
             tys: &mut TyVec<'i, 'a>,
-            ctx: &(impl TyArenaContext<'a> + TyVarContext<'a>),
+            ctx: &ctx!(arena; ty_var),
         ) -> Result<(), TypeCheckError<'i>> {
             let WithInfo(span, arg_structure) = arg_structure;
 
@@ -343,10 +344,7 @@ impl<'a> Type<'a> {
         arg: &'a Self,
         arg_span: Span<'i>,
         ty_config: TyConfig,
-        ctx: &(
-             impl TyArenaContext<'a, Inner = &'inn ContextInner<'a>>
-             + TyVarContext<'a, TyVar = TyVar<'a>>
-         ),
+        ctx: &ctx!(arena 'inn; ty_var),
     ) -> Result<&'a Self, TypeCheckError<'i>>
     where
         'a: 'inn,
@@ -581,7 +579,7 @@ impl<'a> Type<'a> {
     /// Get the minimal concrete supertype
     fn upper_concrete(
         &'a self,
-        ctx: &(impl TyArenaContext<'a> + TyVarContext<'a, TyVar = TyVar<'a>>),
+        ctx: &ctx!(arena; ty_var),
     ) -> Result<&'a Self, TypeCheckError<'static>> {
         match self {
             Type::TyVar(level) => {
