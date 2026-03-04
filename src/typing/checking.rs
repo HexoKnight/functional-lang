@@ -289,8 +289,11 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     let ctx_ = ctx
                         .push_var_tys(arg_types.into_iter().map(|(_, ty)| ty))
                         .push_ty_vars(ty_vars.iter().map(|(name, ty)| (*name, TyVar::Type(ty))));
-                    let (body, result) =
-                        body.type_check(check_result, ty_config.infer_ty_args(true), &ctx_)?;
+                    let (body, result) = body.type_check(
+                        check_result,
+                        ty_config.infer_ty_args(true).ty_infer_fail(false),
+                        &ctx_,
+                    )?;
 
                     let result = result.substitute_ty_vars(
                         ctx.next_ty_var_level(),
