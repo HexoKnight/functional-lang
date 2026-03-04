@@ -441,7 +441,7 @@ impl<'i> Validate<'i> for ast::Type<'i> {
             ast::RawType::Enum(variants) => ir::RawType::Enum(
                 check_unique_labels(variants)
                     .map_ok(|(_, l, t)| t.validate(ctx).map(|t| (l, t)))
-                    .flatten_ok()
+                    .map(Result::flatten)
                     .try_collect()?,
             ),
             ast::RawType::Record(fields) => ir::RawType::Record(
@@ -452,7 +452,7 @@ impl<'i> Validate<'i> for ast::Type<'i> {
                         .validate(ctx)
                         .map(|t| (l, t))
                     })
-                    .flatten_ok()
+                    .map(Result::flatten)
                     .try_collect()?,
             ),
             ast::RawType::Tuple(elements) => {

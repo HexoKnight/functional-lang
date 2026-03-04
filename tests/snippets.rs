@@ -375,7 +375,9 @@ fn enums() {
         r"enum: bool b false",
     );
 
-    validate_failure("match: enum{} { a notfound }");
+    validate_failure(r"match: enum{} { a notfound }");
+
+    validate_failure(r"type enum {asd: enum {a:(), a:()},}");
 }
 
 #[test]
