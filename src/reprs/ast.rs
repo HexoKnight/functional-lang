@@ -38,7 +38,7 @@ pub enum RawTerm<'i> {
     Enum(Option<Type<'i>>, Ident<'i>),
     Match(Option<Type<'i>>, Box<[(Ident<'i>, Term<'i>)]>),
 
-    Record(Box<[(Ident<'i>, Term<'i>)]>),
+    Record(Box<[(Ident<'i>, Option<Term<'i>>)]>),
 
     Tuple(Box<[Term<'i>]>),
 
@@ -135,7 +135,7 @@ pub enum RawType<'i> {
     },
 
     Enum(Box<[(Ident<'i>, Type<'i>)]>),
-    Record(Box<[(Ident<'i>, Type<'i>)]>),
+    Record(Box<[(Ident<'i>, Option<Type<'i>>)]>),
     Tuple(Box<[Type<'i>]>),
 
     Bool,

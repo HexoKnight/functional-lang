@@ -19,6 +19,7 @@
   \K
 
 {
+    uncurry,
     a: (K [bool]).uncurry (K true (), ()),
     b: (?T (K [T]).uncurry) .\x: [T] (T, ()) -> T (),
 }

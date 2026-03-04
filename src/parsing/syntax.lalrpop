@@ -122,9 +122,11 @@ SimpleTerm: RawTerm<'input> = {
     "import" <ImportPath> => RawTerm::Import(<>),
 
     "enum" <(":" <Type>)?> <Ident> => RawTerm::Enum(<>),
-    "match" <ty:(":" <Type>)?> "{" <arms:CommaSep<(Ident Term)>> "}" => RawTerm::Match(ty, arms.into_boxed_slice()),
+    "match" <ty:(":" <Type>)?> "{" <arms:CommaSep<(Ident Term)>> "}" =>
+        RawTerm::Match(ty, arms.into_boxed_slice()),
 
-    "{" <CommaSep<(<Ident> ":" <Term>)>> "}" => RawTerm::Record(<>.into_boxed_slice()),
+    "{" <CommaSep<(<Ident> <(":" <Term>)?>)>> "}" =>
+        RawTerm::Record(<>.into_boxed_slice()),
 
     Tuple<Term> => RawTerm::Tuple(<>),
 
@@ -196,7 +198,7 @@ SimpleType: RawType<'input> = {
 
     "enum" "{" <variants:CommaSep<(<Ident> ":" <Type>)>> "}" =>
         RawType::Enum(variants.into_boxed_slice()),
-    "{" <CommaSep<(<Ident> ":" <Type>)>> "}" =>
+    "{" <CommaSep<(<Ident> <(":" <Type>)?>)>> "}" =>
         RawType::Record(<>.into_boxed_slice()),
     Tuple<Type> => RawType::Tuple(<>),
 

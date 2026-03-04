@@ -381,7 +381,12 @@ impl<'i> Validate<'i> for ast::Term<'i> {
             ),
             ast::RawTerm::Record(fields) => ir::RawTerm::Record(
                 check_unique_labels(fields)
-                    .map_ok(|(_, l, t)| t.validate(ctx).map(|t| (l, t)))
+                    .map_ok(|(i, l, t)| {
+                        (t.as_ref()
+                            .unwrap_or(&WithInfo(i.0, ast::RawTerm::Var(ast::Ident(i.0)))))
+                        .validate(ctx)
+                        .map(|t| (l, t))
+                    })
                     .map(Result::flatten)
                     .try_collect()?,
             ),
@@ -441,7 +446,12 @@ impl<'i> Validate<'i> for ast::Type<'i> {
             ),
             ast::RawType::Record(fields) => ir::RawType::Record(
                 check_unique_labels(fields)
-                    .map_ok(|(_, l, t)| t.validate(ctx).map(|t| (l, t)))
+                    .map_ok(|(i, l, t)| {
+                        (t.as_ref()
+                            .unwrap_or(&WithInfo(i.0, ast::RawType::TyVar(ast::Ident(i.0)))))
+                        .validate(ctx)
+                        .map(|t| (l, t))
+                    })
                     .flatten_ok()
                     .try_collect()?,
             ),

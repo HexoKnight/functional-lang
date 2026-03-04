@@ -17,16 +17,13 @@ type [T] enum { some: T, none: () }
 
 {
     ty: type {
-        nat: nat,
-        list: list,
-        option: option,
+        nat,
+        list,
+        option,
     },
 
-    some: some,
-    none: none,
-
-    nil: nil,
-    cons: cons,
+    some, none,
+    nil, cons,
 
     succ: \n: nat
         fold:nat (enum succ n)
