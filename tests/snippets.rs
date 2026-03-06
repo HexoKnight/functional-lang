@@ -378,6 +378,8 @@ fn enums() {
     validate_failure(r"match: enum{} { a notfound }");
 
     validate_failure(r"type enum {asd: enum {a:(), a:()},}");
+
+    type_check_failure(r"match { a\():() ()} .\b:! -> bool b");
 }
 
 #[test]

@@ -1120,7 +1120,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                             let (func_term, func) = func_term.type_check(
                                 Some(ctx.intern(Type::Arr {
                                     arg: ctx.ty_unknown(),
-                                    result: ctx.ty_unknown(),
+                                    result: check_result.unwrap_or(ctx.ty_unknown()),
                                 })),
                                 ty_config.infer_ty_args(true),
                                 ctx,
