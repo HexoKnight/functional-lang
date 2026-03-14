@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    hash::Hash,
     ops::{Index, Range},
 };
 

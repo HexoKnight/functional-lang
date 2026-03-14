@@ -17,12 +17,12 @@ impl<I, T: PartialEq> PartialEq for WithInfo<I, T> {
     }
 }
 
-pub(crate) fn hashmap_union<'a, K, V1, V2, R>(
+pub(crate) fn hashmap_union_with_key<'a, K, V1, V2, R>(
     hashmap1: &'a HashMap<K, V1>,
     hashmap2: &'a HashMap<K, V2>,
-    mut single1: impl FnMut(&V1) -> R,
-    mut single2: impl FnMut(&V2) -> R,
-    mut merge: impl FnMut(&V1, &V2) -> R,
+    mut single1: impl FnMut(&'a K, &'a V1) -> R,
+    mut single2: impl FnMut(&'a K, &'a V2) -> R,
+    mut merge: impl FnMut(&'a K, &'a V1, &'a V2) -> R,
 ) -> impl Iterator<Item = (&'a K, R)>
 where
     K: Hash + Eq,
@@ -35,9 +35,9 @@ where
                 hashmap2
                     .get(k)
                     // merge intersection
-                    .map(|v2| merge(v1, v2))
+                    .map(|v2| merge(k, v1, v2))
                     // passthru pairs only in hashmap1
-                    .unwrap_or(single1(v1)),
+                    .unwrap_or(single1(k, v1)),
             )
         })
         .chain(
@@ -45,8 +45,40 @@ where
                 .iter()
                 // passthru pairs only in hashmap2
                 .filter(|(k, _)| !hashmap1.contains_key(*k))
-                .map(move |(k, v2)| (k, single2(v2))),
+                .map(move |(k, v2)| (k, single2(k, v2))),
         )
+}
+
+pub(crate) fn hashmap_intersection_with_key<'a, K, V1, V2, R>(
+    hashmap1: &'a HashMap<K, V1>,
+    hashmap2: &'a HashMap<K, V2>,
+    mut merge: impl FnMut(&'a K, &'a V1, &'a V2) -> R,
+) -> impl Iterator<Item = (&'a K, R)>
+where
+    K: Hash + Eq,
+{
+    hashmap1
+        .iter()
+        .filter_map(move |(k, v1)| hashmap2.get(k).map(|v2| (k, merge(k, v1, v2))))
+}
+
+pub(crate) fn hashmap_union<'a, K, V1, V2, R>(
+    hashmap1: &'a HashMap<K, V1>,
+    hashmap2: &'a HashMap<K, V2>,
+    mut single1: impl FnMut(&'a V1) -> R,
+    mut single2: impl FnMut(&'a V2) -> R,
+    mut merge: impl FnMut(&'a V1, &'a V2) -> R,
+) -> impl Iterator<Item = (&'a K, R)>
+where
+    K: Hash + Eq,
+{
+    hashmap_union_with_key(
+        hashmap1,
+        hashmap2,
+        move |_, v1| single1(v1),
+        move |_, v2| single2(v2),
+        move |_, v1, v2| merge(v1, v2),
+    )
 }
 
 pub(crate) fn hashmap_intersection<'a, K, V1, V2, R>(
@@ -57,9 +89,7 @@ pub(crate) fn hashmap_intersection<'a, K, V1, V2, R>(
 where
     K: Hash + Eq,
 {
-    hashmap1
-        .iter()
-        .filter_map(move |(k, v1)| hashmap2.get(k).map(|v2| (k, merge(v1, v2))))
+    hashmap_intersection_with_key(hashmap1, hashmap2, move |_, v1, v2| merge(v1, v2))
 }
 
 pub(crate) fn maybe_zip_eq<T1, T2>(
@@ -163,3 +193,27 @@ impl<T, E> ResultOption for Result<Option<T>, E> {
         }
     }
 }
+
+pub(crate) trait IterExt: Iterator {
+    fn try_partition_map<A, B, F, L, R, E>(self, mut f: F) -> Result<(A, B), E>
+    where
+        Self: Sized,
+        F: FnMut(Self::Item) -> Result<Either<L, R>, E>,
+        A: Default + Extend<L>,
+        B: Default + Extend<R>,
+    {
+        let mut left = A::default();
+        let mut right = B::default();
+
+        for val in self {
+            match f(val)? {
+                Either::Left(v) => left.extend(Some(v)),
+                Either::Right(v) => right.extend(Some(v)),
+            }
+        }
+
+        Ok((left, right))
+    }
+}
+
+impl<I: Iterator> IterExt for I {}

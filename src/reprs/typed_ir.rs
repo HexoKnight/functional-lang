@@ -21,6 +21,14 @@ pub enum RawTerm<'i> {
 
     Var(Idx),
 
+    // TODO
+    Handle {
+        name: Label<'i>,
+    },
+    Trigger {
+        name: Label<'i>,
+    },
+
     Import(ImportId),
 
     Identity,

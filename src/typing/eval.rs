@@ -7,6 +7,7 @@ use crate::{
     reprs::untyped_ir as uir,
     typing::{
         InternedType, TyConfig, TyVar, Variance,
+        effects::{Effect, EffectGroup},
         error::{SpannedError, TypeCheckError, TypeCheckResult},
         subtyping::expect_type,
         ty::{TyBounds, Type},
@@ -22,6 +23,17 @@ pub(super) trait TyEval<'i: 'a, 'a> {
     ) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn;
+}
+
+impl<'i: 'a, 'a, T: TyEval<'i, 'a>> TyEval<'i, 'a> for Option<T> {
+    type Evaled = Option<T::Evaled>;
+
+    fn eval<'inn>(&self, ctx: &ctx!(arena 'inn; ty_var)) -> Result<Self::Evaled, TypeCheckError<'i>>
+    where
+        'a: 'inn,
+    {
+        self.as_ref().map(|t| t.eval(ctx)).transpose()
+    }
 }
 
 impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
@@ -89,10 +101,19 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
                 }
             }
             uir::RawType::TyVar(level) => Type::TyVar(*level),
-            uir::RawType::Arr { arg, result } => {
+            uir::RawType::Arr {
+                arg,
+                effects,
+                result,
+            } => {
                 let arg = arg.as_ref().eval(ctx)?;
+                let effects = effects.eval(ctx)?;
                 let result = result.as_ref().eval(ctx)?;
-                Type::Arr { arg, result }
+                Type::Arr {
+                    arg,
+                    effects,
+                    result,
+                }
             }
             uir::RawType::Enum(variants) => Type::Enum(
                 variants
@@ -157,13 +178,35 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::TyBounds<'i> {
     }
 }
 
-impl<'i: 'a, 'a, T: TyEval<'i, 'a>> TyEval<'i, 'a> for Option<T> {
-    type Evaled = Option<T::Evaled>;
+impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::EffectGroup<'i, uir::Effect<'i>> {
+    type Evaled = EffectGroup<'a>;
 
     fn eval<'inn>(&self, ctx: &ctx!(arena 'inn; ty_var)) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn,
     {
-        self.as_ref().map(|t| t.eval(ctx)).transpose()
+        self.0
+            .iter()
+            .map(|(label, effect)| Ok((*label, effect.eval(ctx)?)))
+            .try_collect()
+    }
+}
+
+impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Effect<'i> {
+    type Evaled = Effect<'a>;
+
+    fn eval<'inn>(&self, ctx: &ctx!(arena 'inn; ty_var)) -> Result<Self::Evaled, TypeCheckError<'i>>
+    where
+        'a: 'inn,
+    {
+        let WithInfo(_span, effect) = self;
+        let effect = match effect {
+            uir::RawEffect::Def { name, arg, result } => Effect::Def {
+                name: *name,
+                arg: arg.eval(ctx)?,
+                result: result.eval(ctx)?,
+            },
+        };
+        Ok(effect)
     }
 }

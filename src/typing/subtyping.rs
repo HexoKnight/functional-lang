@@ -3,6 +3,7 @@ use itertools::{Itertools, zip_eq};
 use crate::typing::{
     InternedType, TyConfig, TyVar,
     context::TyArenaContext,
+    effects::Effect,
     error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
     ty::{TyBounds, TyDisplay, Type},
     ty_eq,
@@ -228,6 +229,7 @@ mod inference {
         typing::{
             InternedType, TyConfig, TyVar, Variance,
             context::{MultiContext, TyArenaContext},
+            effects::Effect,
             error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
             merge::{join, meet},
             subtyping::{Context, expect_type_rec},
@@ -543,8 +545,22 @@ mod inference {
                     Ok(())
                 }
                 Type::TyObj(ty) => ty.update_unconstrained_variances(subtype, ctx),
-                Type::Arr { arg, result } => {
+                Type::Arr {
+                    arg,
+                    effects,
+                    result,
+                } => {
                     arg.update_unconstrained_variances(!subtype, ctx)?;
+                    effects.iter_unsorted().try_for_each(|(_, e)| match e {
+                        Effect::Def {
+                            name: _,
+                            arg,
+                            result,
+                        } => {
+                            arg.update_unconstrained_variances(subtype, ctx)?;
+                            result.update_unconstrained_variances(!subtype, ctx)
+                        }
+                    })?;
                     result.update_unconstrained_variances(subtype, ctx)
                 }
                 Type::Enum(variants) => variants
@@ -839,10 +855,12 @@ fn expect_type_rec<'a>(
         (
             Type::Arr {
                 arg: arg_expected,
+                effects: effects_expected,
                 result: res_expected,
             },
             Type::Arr {
                 arg: arg_found,
+                effects: effects_found,
                 result: res_found,
             },
             _,
@@ -856,6 +874,54 @@ fn expect_type_rec<'a>(
                     ty_config.infer_ty_args(false),
                     ctx,
                 )?,
+                effects: {
+                    let (effects_super, effects_sub) =
+                        super_sub_of(effects_expected, effects_found, swapped);
+                    effects_sub.try_map(|label, effect_sub| {
+                        let check_effects = |effect_super, effect_sub| {
+                            let (effect_expected, effect_found) =
+                                exp_found_of(effect_super, effect_sub, swapped);
+                            Effect::expect_effect_rec(effect_expected, effect_found, subtype, ctx)
+                                .wrap_error(|| {
+                                    PlainContextError::new(
+                                        "from the perspective of subtyping, \
+                                        effects are like arrow type parameters",
+                                    )
+                                })
+                        };
+
+                        if let Some(label) = label {
+                            if let Some(effect_super) = effects_super.get_labelled(label) {
+                                check_effects(effect_super, effect_sub).wrap_error(|| {
+                                    PlainContextError::new(format!(
+                                        "for effect with label '{label}'"
+                                    ))
+                                })
+                            } else if let Some(effect_super) =
+                                effects_super.get_anonymous(effect_sub.get_name())
+                            {
+                                check_effects(effect_super, effect_sub)
+                            } else {
+                                Err(PlainContextError::new(format!(
+                                    "labelled effect '{label}' missing from supertype"
+                                )))?
+                            }
+                        } else if let Some(effect_super) =
+                            effects_super.get_anonymous(effect_sub.get_name())
+                        {
+                            check_effects(effect_super, effect_sub)
+                        } else if effects_super.exhaustive {
+                            Err(PlainContextError::new(format!(
+                                "anonymous '{}' effect missing from supertype",
+                                effect_sub.get_name()
+                            )))?
+                        } else {
+                            // non-exhaustive super effects so an extra effect is valid
+                            // should only occur when super == expected but we don't check for that
+                            Ok(*effect_sub)
+                        }
+                    })?
+                },
                 result: expect_type_rec(res_expected, res_found, subtype, ty_config, ctx)?,
             }))
         })(),
@@ -1083,5 +1149,66 @@ impl<'a> TyBounds<'a> {
             })?;
         }
         Ok(())
+    }
+}
+
+impl<'a> Effect<'a> {
+    pub(super) fn expect_effect<'inn>(
+        expected: &Self,
+        found: &Self,
+        subtype: bool,
+        ctx: &ctx!(arena 'inn; ty_var),
+    ) -> Result<Self, ContextError<'static>>
+    where
+        'a: 'inn,
+    {
+        Self::expect_effect_rec(expected, found, subtype, &Context::from(ctx))
+    }
+
+    fn expect_effect_rec(
+        expected: &Self,
+        found: &Self,
+        subtype: bool,
+        ctx: &Context<'a, '_>,
+    ) -> Result<Self, ContextError<'static>> {
+        let effect = match (expected, found) {
+            (
+                Effect::Def {
+                    name: name_expected,
+                    arg: arg_expected,
+                    result: result_expected,
+                },
+                Effect::Def {
+                    name: name_found,
+                    arg: arg_found,
+                    result: result_found,
+                },
+            ) => {
+                if name_expected != name_found {
+                    Err(PlainContextError::new(format!(
+                        "expected effect: '{name_expected}'\n\
+                        found effect: '{name_found}'"
+                    )))?
+                }
+                Effect::Def {
+                    name: *name_found,
+                    arg: expect_type_rec(
+                        arg_expected,
+                        arg_found,
+                        subtype,
+                        TyConfig::ty_inference_disabled(),
+                        ctx,
+                    )?,
+                    result: expect_type_rec(
+                        result_expected,
+                        result_found,
+                        !subtype,
+                        TyConfig::ty_inference_disabled(),
+                        ctx,
+                    )?,
+                }
+            }
+        };
+        Ok(effect)
     }
 }

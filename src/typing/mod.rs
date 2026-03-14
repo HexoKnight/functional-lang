@@ -5,11 +5,12 @@ use itertools::{Itertools, zip_eq};
 use crate::{
     common::WithInfo,
     reprs::common::{
-        ArgStructure, ArgTermStructure, ArgTypeStructure, Lvl, RawArgStructure,
+        ArgStructure, ArgTermStructure, ArgTypeStructure, Label, Lvl, RawArgStructure,
         RawArgTermStructure, Span,
     },
     typing::{
         context::TyArenaContext,
+        effects::{Effect, EffectGroup},
         error::{SpannedError, TypeCheckResult},
         subtyping::expect_type,
         ty::{TyBounds, TyDisplay, Type},
@@ -19,6 +20,7 @@ use crate::{
 mod checking;
 #[macro_use]
 mod context;
+mod effects;
 mod error;
 mod eval;
 mod merge;
@@ -63,6 +65,20 @@ enum TyVar<'a> {
     Type(InternedType<'a>),
     Bounded(TyBounds<'a>),
     Rec,
+}
+
+/// anytime this is accessed, we must make sure any
+/// referenced types are valid in the current context
+#[derive(Copy, Clone)]
+enum EffVar<'a> {
+    Effect(Effect<'a>, Lvl),
+}
+impl<'a> EffVar<'a> {
+    fn get_name(&self) -> Label<'a> {
+        match self {
+            EffVar::Effect(effect, _) => effect.get_name(),
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -127,9 +143,27 @@ impl Type<'_> {
                 }
             }
             Type::TyObj(ty) => ty.get_variance_of(ty_var_level),
-            Type::Arr { arg, result } => arg
+            Type::Arr {
+                arg,
+                effects,
+                result,
+            } => arg
                 .get_variance_of(ty_var_level)
                 .invert()
+                .add(
+                    effects
+                        .iter_sorted()
+                        .map(|(_, e)| match e {
+                            Effect::Def {
+                                name: _,
+                                arg,
+                                result,
+                            } => arg
+                                .get_variance_of(ty_var_level)
+                                .add(result.get_variance_of(ty_var_level).invert()),
+                        })
+                        .sum(),
+                )
                 .add(result.get_variance_of(ty_var_level)),
             Type::Enum(variants) => variants
                 .0
@@ -154,6 +188,14 @@ fn ty_eq<'a>(ty1: InternedType<'a>, ty2: InternedType<'a>) -> bool {
 }
 
 impl<'a> Type<'a> {
+    fn arr(arg: &'a Self, result: &'a Self) -> Self {
+        Self::Arr {
+            arg,
+            effects: EffectGroup::new_non_exhaustive(),
+            result,
+        }
+    }
+
     fn destructure<'i, 's>(
         &'a self,
         arg_structure: &'s ArgStructure<'i>,
@@ -429,8 +471,21 @@ impl<'a> Type<'a> {
             },
             Type::TyVar(ty_level) => return f(*ty_level, level),
             Type::TyObj(ty) => Type::TyObj(ty.try_map_ty_vars(f, level, ctx)?),
-            Type::Arr { arg, result } => Type::Arr {
+            Type::Arr {
+                arg,
+                effects,
+                result,
+            } => Type::Arr {
                 arg: arg.try_map_ty_vars(f, level, ctx)?,
+                effects: effects.try_map(|_, effect| {
+                    Ok(match effect {
+                        Effect::Def { name, arg, result } => Effect::Def {
+                            name: *name,
+                            arg: arg.try_map_ty_vars(f, level, ctx)?,
+                            result: result.try_map_ty_vars(f, level, ctx)?,
+                        },
+                    })
+                })?,
                 result: result.try_map_ty_vars(f, level, ctx)?,
             },
             Type::Enum(variants) => Type::Enum(

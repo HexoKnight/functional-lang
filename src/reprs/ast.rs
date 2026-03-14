@@ -1,3 +1,5 @@
+use derive_where::derive_where;
+
 use crate::{common::WithInfo, reprs::common::Span};
 
 pub type Term<'i> = WithInfo<Span<'i>, RawTerm<'i>>;
@@ -8,10 +10,15 @@ pub enum RawTerm<'i> {
         arg: Assignee<'i>,
         arg_type: Option<Type<'i>>,
 
+        effects: Option<EffectGroup<'i, Effect<'i>>>,
+
         body: Box<Term<'i>>,
     },
     App {
         func: Box<Term<'i>>,
+
+        effects: Option<EffectGroup<'i, Ident<'i>>>,
+
         arg: Box<Term<'i>>,
     },
 
@@ -29,6 +36,9 @@ pub enum RawTerm<'i> {
     Var(Ident<'i>),
 
     Type(Type<'i>),
+
+    Handle(Effect<'i>),
+    Trigger(Effect<'i>),
 
     Import(ImportPath<'i>),
 
@@ -131,6 +141,9 @@ pub enum RawType<'i> {
 
     Arr {
         arg: Box<Type<'i>>,
+
+        effects: Option<EffectGroup<'i, Effect<'i>>>,
+
         result: Box<Type<'i>>,
     },
 
@@ -142,3 +155,18 @@ pub enum RawType<'i> {
     Any,
     Never,
 }
+
+pub type Effect<'i> = WithInfo<Span<'i>, RawEffect<'i>>;
+
+#[derive(Eq, PartialEq, Debug)]
+pub enum RawEffect<'i> {
+    Def {
+        name: Ident<'i>,
+        arg: Box<Type<'i>>,
+        result: Box<Type<'i>>,
+    },
+}
+
+#[derive(Eq, PartialEq, Debug)]
+#[derive_where(Default)]
+pub struct EffectGroup<'i, T>(pub Box<[(Option<Ident<'i>>, T)]>);

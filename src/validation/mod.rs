@@ -8,13 +8,13 @@ use crate::common::WithInfo;
 use crate::importing::{ImportError, ImportId, ImportResolver};
 use crate::reprs::ast::{self, RawAssignee, RawTermAssignee};
 use crate::reprs::common::{
-    ArgStructure, ArgTypeStructure, Label, RawArgStructure, RawArgTermStructure,
+    ArgStructure, ArgTypeStructure, Label, Lvl, RawArgStructure, RawArgTermStructure,
     RawArgTypeStructure, Span,
 };
 use crate::reprs::untyped_ir as ir;
 
 use self::context::{Context, ContextInner};
-pub use self::error::ValidationError;
+pub use self::error::{ValidationError, VarKind};
 
 mod context {
     use std::{cell::RefCell, collections::HashMap};
@@ -56,6 +56,7 @@ mod context {
 
         var_stack: Stack<&'i str>,
         ty_var_stack: Stack<&'i str>,
+        effect_stack: Stack<&'i str>,
     }
 
     impl<'i, 'inn, IR: ImportResolver> Context<'i, 'inn, IR> {
@@ -69,6 +70,7 @@ mod context {
 
                 var_stack: Vec::new(),
                 ty_var_stack: Vec::new(),
+                effect_stack: Vec::new(),
             }
         }
 
@@ -90,6 +92,16 @@ mod context {
 
         pub(super) fn find_ty_var(&self, name: &'i str) -> Option<Lvl> {
             Lvl::find(&self.ty_var_stack, |ty_var| *ty_var == name)
+        }
+
+        pub(super) fn push_eff_vars(&self, effects: impl IntoIterator<Item = &'i str>) -> Self {
+            let mut new = self.clone();
+            new.effect_stack.extend(effects);
+            new
+        }
+
+        pub(super) fn find_eff_var(&self, name: &'i str) -> Option<Lvl> {
+            Lvl::find(&self.effect_stack, |effect| *effect == name)
         }
 
         pub(super) fn resolve_relative_import(
@@ -136,9 +148,15 @@ mod error {
 
     use crate::{error::RenderError, reprs::common::Span, validation::ImportTermInfo};
 
+    pub enum VarKind {
+        Normal,
+        Type,
+        Effect,
+    }
+
     pub enum ValidationError<'i> {
         VarNotFound {
-            ty_var: bool,
+            var_kind: VarKind,
             name: &'i str,
             span: Span<'i>,
         },
@@ -161,10 +179,18 @@ mod error {
     impl<'i> RenderError<'i> for ValidationError<'i> {
         fn push_groups(self, buf: &mut Vec<Group<'i>>) {
             let group = match self {
-                ValidationError::VarNotFound { ty_var, name, span } => Level::ERROR
+                ValidationError::VarNotFound {
+                    var_kind,
+                    name,
+                    span,
+                } => Level::ERROR
                     .primary_title(format!(
                         "{}variable '{name}' not found",
-                        if ty_var { "type " } else { "" }
+                        match var_kind {
+                            VarKind::Normal => "",
+                            VarKind::Type => "type ",
+                            VarKind::Effect => "effect ",
+                        }
                     ))
                     .element(
                         span.snippet()
@@ -291,20 +317,25 @@ impl<'i> Validate<'i> for ast::Term<'i> {
             ast::RawTerm::Abs {
                 arg,
                 arg_type,
+                effects,
                 body,
             } => {
                 let (arg_structure, arg_vars, ty_vars) = extract_idents(arg)?;
+                let effects = effects.validate(ctx)?.unwrap_or_default();
                 ir::RawTerm::Abs {
                     arg_structure,
                     arg_type: arg_type.validate(ctx)?,
                     body: body.validate(
                         &ctx.push_vars(arg_vars.map(|i| i.0.text()))
-                            .push_ty_vars(ty_vars.map(|i| i.0.text())),
+                            .push_ty_vars(ty_vars.map(|i| i.0.text()))
+                            .push_eff_vars(effects.0.iter().filter_map(|(n, _)| n.map(|n| n.0))),
                     )?,
+                    effects,
                 }
             }
-            ast::RawTerm::App { func, arg } => ir::RawTerm::App {
+            ast::RawTerm::App { func, effects, arg } => ir::RawTerm::App {
                 func: func.validate(ctx)?,
+                effects: effects.validate(ctx)?.unwrap_or_default(),
                 arg: arg.validate(ctx)?,
             },
             ast::RawTerm::TyAbs { arg, bounds, body } => ir::RawTerm::TyAbs {
@@ -319,7 +350,7 @@ impl<'i> Validate<'i> for ast::Term<'i> {
             ast::RawTerm::Var(ident) => {
                 let Some(index) = ctx.find_var(ident.0.text()) else {
                     return Err(ValidationError::VarNotFound {
-                        ty_var: false,
+                        var_kind: VarKind::Normal,
                         name: ident.0.text(),
                         span: ident.0,
                     });
@@ -327,6 +358,8 @@ impl<'i> Validate<'i> for ast::Term<'i> {
                 ir::RawTerm::Var(index)
             }
             ast::RawTerm::Type(ty) => ir::RawTerm::Type(ty.validate(ctx)?),
+            ast::RawTerm::Handle(effect) => ir::RawTerm::Handle(effect.validate(ctx)?),
+            ast::RawTerm::Trigger(effect) => ir::RawTerm::Trigger(effect.validate(ctx)?),
             ast::RawTerm::Import(path) => ir::RawTerm::Import(match path {
                 ast::ImportPath::Relative { span } => WithInfo(
                     *span,
@@ -427,15 +460,20 @@ impl<'i> Validate<'i> for ast::Type<'i> {
             ast::RawType::TyVar(ident) => {
                 let Some(level) = ctx.find_ty_var(ident.0.text()) else {
                     return Err(ValidationError::VarNotFound {
-                        ty_var: true,
+                        var_kind: VarKind::Type,
                         name: ident.0.text(),
                         span: ident.0,
                     });
                 };
                 ir::RawType::TyVar(level)
             }
-            ast::RawType::Arr { arg, result } => ir::RawType::Arr {
+            ast::RawType::Arr {
+                arg,
+                effects,
+                result,
+            } => ir::RawType::Arr {
                 arg: arg.validate(ctx)?,
+                effects: effects.validate(ctx)?.unwrap_or_default(),
                 result: result.validate(ctx)?,
             },
             ast::RawType::Enum(variants) => ir::RawType::Enum(
@@ -475,6 +513,57 @@ impl<'i> Validate<'i> for ast::TyBounds<'i> {
             upper: upper.as_ref().map(|ty| ty.validate(ctx)).transpose()?,
             lower: lower.as_ref().map(|ty| ty.validate(ctx)).transpose()?,
         })
+    }
+}
+
+impl<'i> Validate<'i> for ast::Effect<'i> {
+    type Validated = ir::Effect<'i>;
+
+    fn validate(&self, ctx: &Context<'i, '_, impl ImportResolver>) -> Result<'i, Self::Validated> {
+        let WithInfo(info, effect) = self;
+
+        let effect = match effect {
+            ast::RawEffect::Def { name, arg, result } => ir::RawEffect::Def {
+                name: Label(name.0.text()),
+                arg: arg.validate(ctx)?,
+                result: result.validate(ctx)?,
+            },
+        };
+        Ok(WithInfo(*info, effect))
+    }
+}
+
+impl<'i> Validate<'i> for ast::EffectGroup<'i, ast::Effect<'i>> {
+    type Validated = ir::EffectGroup<'i, ir::Effect<'i>>;
+
+    fn validate(&self, ctx: &Context<'i, '_, impl ImportResolver>) -> Result<'i, Self::Validated> {
+        let ast::EffectGroup(effects) = self;
+        let effects = check_unique_optional_labels(effects)
+            .map_ok(|(label, e)| e.validate(ctx).map(|e| (label.map(|(_, l)| l), e)))
+            .map(Result::flatten)
+            .try_collect()?;
+        Ok(ir::EffectGroup(effects))
+    }
+}
+impl<'i> Validate<'i> for ast::EffectGroup<'i, ast::Ident<'i>> {
+    type Validated = ir::EffectGroup<'i, Lvl>;
+
+    fn validate(&self, ctx: &Context<'i, '_, impl ImportResolver>) -> Result<'i, Self::Validated> {
+        let ast::EffectGroup(effects) = self;
+        let effects = check_unique_optional_labels(effects)
+            .map_ok(|(label, ident)| {
+                let Some(level) = ctx.find_eff_var(ident.0.text()) else {
+                    Err(ValidationError::VarNotFound {
+                        var_kind: VarKind::Effect,
+                        name: ident.0.text(),
+                        span: ident.0,
+                    })?
+                };
+                Ok((label.map(|(_, l)| l), level))
+            })
+            .map(Result::flatten)
+            .try_collect()?;
+        Ok(ir::EffectGroup(effects))
     }
 }
 
@@ -592,5 +681,25 @@ fn check_unique_labels<'i, 'a, I>(
             });
         }
         Ok((ident, label, i))
+    })
+}
+fn check_unique_optional_labels<'i, 'a, I>(
+    labelled_items: &'a [(Option<ast::Ident<'i>>, I)],
+) -> impl Iterator<Item = Result<'i, (Option<(&'a ast::Ident<'i>, Label<'i>)>, &'a I)>> {
+    let mut labels = HashMap::new();
+    labelled_items.iter().map(move |(ident, i)| {
+        if let Some(ident) = ident {
+            let label = Label(ident.0.text());
+            if let Some(prev_ident) = labels.insert(label, ident) {
+                return Err(ValidationError::SameLabel {
+                    name: label.0,
+                    first_span: prev_ident.0,
+                    second_span: ident.0,
+                });
+            }
+            Ok((Some((ident, label)), i))
+        } else {
+            Ok((None, i))
+        }
     })
 }

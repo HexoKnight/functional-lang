@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use derive_where::derive_where;
+
 use crate::{
     common::WithInfo,
     importing::ImportId,
@@ -14,10 +16,15 @@ pub enum RawTerm<'i> {
         arg_structure: ArgStructure<'i>,
         arg_type: Option<Type<'i>>,
 
+        effects: EffectGroup<'i, Effect<'i>>,
+
         body: Box<Term<'i>>,
     },
     App {
         func: Box<Term<'i>>,
+
+        effects: EffectGroup<'i, Lvl>,
+
         arg: Box<Term<'i>>,
     },
 
@@ -35,6 +42,9 @@ pub enum RawTerm<'i> {
     Var(Idx),
 
     Type(Type<'i>),
+
+    Handle(Effect<'i>),
+    Trigger(Effect<'i>),
 
     Import(WithInfo<Span<'i>, ImportId>),
 
@@ -80,6 +90,9 @@ pub enum RawType<'i> {
 
     Arr {
         arg: Box<Type<'i>>,
+
+        effects: EffectGroup<'i, Effect<'i>>,
+
         result: Box<Type<'i>>,
     },
 
@@ -91,3 +104,18 @@ pub enum RawType<'i> {
     Any,
     Never,
 }
+
+pub type Effect<'i> = WithInfo<Span<'i>, RawEffect<'i>>;
+
+#[derive(Eq, PartialEq, Debug)]
+pub enum RawEffect<'i> {
+    Def {
+        name: Label<'i>,
+        arg: Box<Type<'i>>,
+        result: Box<Type<'i>>,
+    },
+}
+
+#[derive(Eq, PartialEq, Debug)]
+#[derive_where(Default)]
+pub struct EffectGroup<'i, T>(pub Box<[(Option<Label<'i>>, T)]>);

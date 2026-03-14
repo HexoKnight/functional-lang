@@ -7,12 +7,12 @@ extern {
     type Error = crate::parsing::UserParserError;
 }
 
-CommaSep<T>: Vec<T> = {
+CommaSep<T>: Box<[T]> = {
     <mut start:(<T> ",")*> <last:T?> => {
         if let Some(last) = last {
             start.push(last);
         }
-        start
+        start.into_boxed_slice()
     },
 }
 
@@ -24,6 +24,7 @@ match {
 
     "\\", ":",
     "?", "<", ">",
+    "%",
     ".", ",",
 
     "rec",
@@ -33,6 +34,7 @@ match {
 
     "type",
     "import", "fold", "unfold", "enum", "match",
+    "trigger", "handle", "effect",
     "bool", "true", "false",
 
     r"[a-zA-Z]+" => IDENT,
@@ -75,7 +77,8 @@ RawTerm: RawTerm<'input> = {
 }
 
 Abs: RawTerm<'input> = {
-    "\\" <arg:Assignee> <arg_type:(":" <Type>)?> <body:Box<Term>> => RawTerm::Abs { arg, arg_type, body },
+    "\\" <arg:Assignee> <arg_type:(":" <Type>)?> <effects:EffectGroup<Effect>?> <body:Box<Term>> =>
+        RawTerm::Abs { arg, arg_type, effects, body },
     "?" <arg:Ident> <bounds:TyBounds> <body:Box<Term>> => RawTerm::TyAbs { arg, bounds, body },
 }
 
@@ -83,11 +86,13 @@ TyApp: RawTerm<'input> = {
     <func:Box<WithInfo<TyAppLeft>>> "[" <arg:Box<Type>> "]" => RawTerm::TyApp { func, arg },
 }
 App<Abs, Term>: RawTerm<'input> = {
-    <func:Box<WithInfo<AppLeft>>> <arg:Box<WithInfo<AppRight<Abs, Term>>>> => RawTerm::App { func, arg },
+    <func:Box<WithInfo<AppLeft>>> <effects:EffectGroup<Ident>?> <arg:Box<WithInfo<AppRight<Abs, Term>>>> =>
+        RawTerm::App { func, effects, arg },
 }
 
 Dot<Abs, Term>: RawTerm<'input> = {
-    <arg:Box<WithInfo<DotLeft>>> "." <func:Box<WithInfo<DotRight<Abs, Term>>>> => RawTerm::App { func, arg },
+    <arg:Box<WithInfo<DotLeft>>> "." <effects:EffectGroup<Ident>?> <func:Box<WithInfo<DotRight<Abs, Term>>>> =>
+        RawTerm::App { func, effects, arg },
 }
 
 NoAbs: RawTerm<'input> = {}
@@ -100,6 +105,9 @@ DotRight<Abs, Term> = { Abs,                                                    
 // terms that can end in a `Type`
 TyTerm: RawTerm<'input> = {
     "type" <Type> => RawTerm::Type(<>),
+
+    "handle" <Effect> => RawTerm::Handle(<>),
+    "trigger" <Effect> => RawTerm::Trigger(<>),
 
     "fold" <(":" <Type>)?> => RawTerm::Fold(<>),
     "unfold" <(":" <Type>)?> => RawTerm::Unfold(<>),
@@ -122,11 +130,9 @@ SimpleTerm: RawTerm<'input> = {
     "import" <ImportPath> => RawTerm::Import(<>),
 
     "enum" <(":" <Type>)?> <Ident> => RawTerm::Enum(<>),
-    "match" <ty:(":" <Type>)?> "{" <arms:CommaSep<(Ident Term)>> "}" =>
-        RawTerm::Match(ty, arms.into_boxed_slice()),
+    "match" <(":" <Type>)?> "{" <CommaSep<(Ident Term)>> "}" => RawTerm::Match(<>),
 
-    "{" <CommaSep<(<Ident> <(":" <Term>)?>)>> "}" =>
-        RawTerm::Record(<>.into_boxed_slice()),
+    "{" <CommaSep<(<Ident> <(":" <Term>)?>)>> "}" => RawTerm::Record(<>),
 
     Tuple<Term> => RawTerm::Tuple(<>),
 
@@ -138,7 +144,7 @@ Assignee: Assignee<'input> = WithInfo<RawTermAssignee>;
 TypeAssignee: TypeAssignee<'input> = WithInfo<RawTypeAssignee>;
 
 RawAssignee<A>: RawAssignee<'input, A> = {
-    "{" <CommaSep<(Ident (":" <A>)?)>> "}" => RawAssignee::Record(<>.into_boxed_slice()),
+    "{" <CommaSep<(Ident (":" <A>)?)>> "}" => RawAssignee::Record(<>),
     Tuple<A> => RawAssignee::Tuple(<>),
     Ident => RawAssignee::Ident(<>),
 
@@ -173,7 +179,8 @@ RawType: RawType<'input> = {
 }
 
 Ty_Arr: RawType<'input> = {
-    <arg:Box<WithInfo<Ty_ArrLeft>>> "->" <result:Box<Type>> => RawType::Arr { arg, result },
+    <arg:Box<WithInfo<Ty_ArrLeft>>> "->" <effects:EffectGroup<Effect>?> <result:Box<Type>> =>
+        RawType::Arr { arg, effects, result },
 }
 Ty_TyAbs: RawType<'input> = {
     "[" <arg:Ident> <bounds:Box<TyBounds>> "]" <result:Box<Type>> => RawType::TyAbs { arg, bounds, result },
@@ -196,13 +203,21 @@ SimpleType: RawType<'input> = {
 
     Ident => RawType::TyVar(<>),
 
-    "enum" "{" <variants:CommaSep<(<Ident> ":" <Type>)>> "}" =>
-        RawType::Enum(variants.into_boxed_slice()),
-    "{" <CommaSep<(<Ident> <(":" <Type>)?>)>> "}" =>
-        RawType::Record(<>.into_boxed_slice()),
+    "enum" "{" <CommaSep<(<Ident> ":" <Type>)>> "}" => RawType::Enum(<>),
+    "{" <CommaSep<(<Ident> <(":" <Type>)?>)>> "}" => RawType::Record(<>),
     Tuple<Type> => RawType::Tuple(<>),
 
     "bool" => RawType::Bool,
     "_" => RawType::Any,
     "!" => RawType::Never,
+}
+
+Effect: Effect<'input> = WithInfo<RawEffect>;
+
+RawEffect: RawEffect<'input> = {
+    "effect" <name:Ident> <arg:Box<WithInfo<Ty_ArrLeft>>> "->" <result:Box<Type>> => RawEffect::Def { name, arg, result },
+}
+
+EffectGroup<T>: EffectGroup<'input, T> = {
+    "%" "{" <CommaSep<(<(<Ident> ":")?> <T>)>> "}" => EffectGroup(<>),
 }

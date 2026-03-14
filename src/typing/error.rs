@@ -5,7 +5,10 @@ use std::{
 
 use annotate_snippets::{AnnotationKind, Group, Level, Origin};
 
-use crate::{error::RenderError, reprs::common::Span};
+use crate::{
+    error::RenderError,
+    reprs::common::{Label, Span},
+};
 
 #[derive(Clone)]
 pub enum TypeCheckError<'i> {
@@ -176,6 +179,38 @@ impl<'i> SpannedError<'i> {
                 .map(|(span, l)| (span, l.into()))
                 .collect(),
             text: text.into(),
+        }
+    }
+
+    pub fn eff_eff_mismatch(
+        expected_eff: impl Into<Cow<'i, str>>,
+        found_eff: impl Into<Cow<'i, str>>,
+        label: Option<Label<'_>>,
+        abs_span: Span<'i>,
+        eff_span: Option<Span<'i>>,
+    ) -> Self {
+        let expected_eff = expected_eff.into();
+        let found_eff = found_eff.into();
+        Self {
+            title: format!("effect mismatch: expected `{expected_eff}`").into(),
+
+            span: abs_span,
+            span_label: if let Some(label) = label {
+                format!("effect with label '{label}' in this abstraction").into()
+            } else {
+                "effect for this abstraction".into()
+            },
+            context_spans: if let Some(eff_span) = eff_span {
+                vec![(eff_span, "found effect used here".into())]
+            } else {
+                Vec::new()
+            },
+
+            text: format!(
+                "expected: `{expected_eff}`\n\
+                found:    `{found_eff}`"
+            )
+            .into(),
         }
     }
 }

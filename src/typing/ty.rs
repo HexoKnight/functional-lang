@@ -1,3 +1,5 @@
+use std::hash::Hash;
+
 use itertools::Itertools;
 
 use crate::{
@@ -5,6 +7,7 @@ use crate::{
     reprs::common::{Label, Lvl},
     typing::{
         context::{TyArenaContext, TyVarContext, TyVarStack},
+        effects::{Effect, EffectGroup},
         error::IllegalError,
     },
 };
@@ -33,6 +36,7 @@ pub enum Type<'ctx> {
 
     Arr {
         arg: TypeRef<'ctx>,
+        effects: EffectGroup<'ctx>,
         result: TypeRef<'ctx>,
     },
 
@@ -122,7 +126,11 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
                 w.push_str("type ");
                 ty.write_display(ctx, w)?;
             }
-            Type::Arr { arg, result } => {
+            Type::Arr {
+                arg,
+                effects,
+                result,
+            } => {
                 if matches!(
                     arg,
                     Type::TyAbs { .. } | Type::RecAbs { .. } | Type::TyObj(_) | Type::Arr { .. }
@@ -130,12 +138,30 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
                     w.push('(');
                     arg.write_display(ctx, w)?;
                     w.push_str(") -> ");
-                    result.write_display(ctx, w)?;
                 } else {
                     arg.write_display(ctx, w)?;
                     w.push_str(" -> ");
-                    result.write_display(ctx, w)?;
                 }
+
+                // not 100% sure why the types cannot be inferred
+                let display_effect = |name: Option<Label>, effect: &Effect, w: &mut String| {
+                    if let Some(name) = name {
+                        w.push_str(name.0);
+                        w.push_str(": ");
+                    }
+                    effect.write_display(ctx, w)
+                };
+                let mut iter = effects.iter_sorted();
+                if let Some((name, effect)) = iter.next() {
+                    w.push_str("%{");
+                    display_effect(name, effect, w)?;
+                    for (name, effect) in iter {
+                        w.push_str(", ");
+                        display_effect(name, effect, w)?;
+                    }
+                    w.push_str("} ");
+                }
+                result.write_display(ctx, w)?;
             }
             Type::Enum(variants) => {
                 w.push_str("enum {");
@@ -225,5 +251,29 @@ impl<'ctx> TyDisplay<'ctx> for TyBounds<'ctx> {
         let Self { upper, lower } = self;
 
         Ok(upper.is_none() && lower.is_none())
+    }
+}
+
+impl<'ctx> TyDisplay<'ctx> for Effect<'ctx> {
+    fn write_display(
+        &self,
+        ctx: &TyVarStack<'ctx, ()>,
+        w: &mut String,
+    ) -> Result<(), IllegalError<'static>> {
+        match self {
+            Effect::Def { name, arg, result } => {
+                w.push_str("effect ");
+                w.push_str(name.0);
+                w.push(' ');
+                arg.write_display(ctx, w)?;
+                w.push_str(" -> ");
+                result.write_display(ctx, w)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_empty(&self, _ctx: &TyVarStack<'ctx, ()>) -> Result<bool, IllegalError<'static>> {
+        Ok(false)
     }
 }

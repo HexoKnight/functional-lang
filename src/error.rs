@@ -50,12 +50,6 @@ impl<'i> RenderError<'i> for CompilationError<'i> {
     }
 }
 
-impl CompilationError<'_> {
-    pub fn render_styled(self) -> String {
-        Renderer::styled().render(&self.into_record())
-    }
-}
-
 pub trait RenderError<'i>: Sized {
     /// push groups in reverse order (for simplicity)
     fn push_groups(self, buf: &mut Vec<Group<'i>>);
@@ -66,6 +60,10 @@ pub trait RenderError<'i>: Sized {
         // we collect groups backwards so we reverse it here
         buf.reverse();
         buf
+    }
+
+    fn render_styled(self) -> String {
+        Renderer::styled().render(&self.into_record())
     }
 }
 

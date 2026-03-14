@@ -765,3 +765,98 @@ fn type_level_ty_app() {
     evaluate_check_type(r"type ([T] (T, T)) [[A] A]", "type ([A] A, [A] A)");
     evaluate_check_type(r"type ([T] [U] (T, U)) [[A] A]", "type [U] ([A] A, U)");
 }
+
+#[test]
+fn effects() {
+    evaluate_check_type(
+        r"type () -> %{effect get () -> bool} bool",
+        "type () -> %{effect get () -> bool} bool",
+    );
+    evaluate_check_type(
+        r"\b:bool %{effect err () -> !} trigger effect err () -> ! ()",
+        "bool -> %{effect err () -> !} !",
+    );
+    evaluate_check_type(
+        r"(\b:bool %{errA: effect err () -> !, errB: effect err () -> !} trigger effect err () -> ! %{errA} ()) .\f: bool -> %{errA: effect err () -> !, errB: effect err () -> !} ! f",
+        "bool -> %{errA: effect err () -> !, errB: effect err () -> !} !",
+    );
+    evaluate_check_type(
+        r"\b:bool %{errA: effect err () -> !, errB: effect err () -> !} trigger effect err () -> ! %{errA} ()",
+        "bool -> %{errA: effect err () -> !, errB: effect err () -> !} !",
+    );
+
+    let fa = |s: &str| [r"\f: () -> %{a: effect a () -> ()} ()", s].join("\n");
+
+    validate_failure(&fa(r"  \():() %{b: effect a () -> ()} f %{a: b, a: b} ()"));
+    type_check_failure(&fa(r"\():() %{b: effect a () -> ()} f %{a: b, c: b} ()"));
+    type_check_failure(&fa(r"\():() %{b: effect a () -> ()} f %{a: b, b} ()"));
+    type_check_failure(&fa(r"\():() %{b: effect a () -> ()} f %{b} ()"));
+    type_check_failure(&fa(r"\():() %{b: effect a () -> ()} f %{} ()"));
+
+    let f = |s: &str| [r"\f: () -> %{effect a () -> ()} ()", s].join("\n");
+
+    type_check_failure(&f(r"\():() %{effect a () -> _} (?T \t:T t) (f ())"));
+    type_check_failure(&f(r"?T (f ())"));
+
+    type_check_failure(r"\b:bool %{effect err bool -> bool} trigger effect err () -> ! ()");
+    type_check_failure(r"trigger effect err () -> ! ()");
+
+    evaluate_check_type(
+        r"\handler: (() -> %{effect a () -> ()} ()) -> ()
+        (
+            handler \():()
+            trigger effect a () -> () ()
+        ).\() (
+            handler \():() %{eff: effect a () -> ()}
+            trigger effect a () -> () %{eff} ()
+        ).\() (
+            handler \():() %{effA: effect a () -> ()}
+            handler \():() %{effB: effect a () -> ()}
+            (
+                trigger effect a () -> () %{effA} ()
+            ).\() (
+                trigger effect a () -> () %{effB} ()
+            ).\() (
+                trigger effect a () -> () ()
+            )
+        )",
+        "((() -> %{effect a () -> ()} ()) -> ()) -> ()",
+    );
+    type_check_failure(
+        r"\handler: (() -> %{a: effect a () -> ()} ()) -> ()
+        handler \():()
+        trigger effect a () -> () ()",
+    );
+    type_check_failure(
+        r"\handler: (() -> %{a: effect a () -> ()} ()) -> ()
+        handler \():() %{a: effect a () -> ()}
+        trigger effect a bool -> () true",
+    );
+    evaluate_check_type(
+        r"\handler: (() -> %{a: effect a () -> ()} ()) -> ()
+        handler \():() %{a: effect a () -> ()}
+        trigger effect a () -> () ()",
+        "((() -> %{a: effect a () -> ()} ()) -> ()) -> ()",
+    );
+
+    evaluate_check_type(
+        r"\x:! x.\handleGet: [T] T -> [R] (() -> %{effect get () -> T} R) -> R
+        (
+            handleGet true \():()
+            trigger effect get () -> bool ()
+        ).\x:bool (
+            handleGet true \():() %{b: effect get () -> bool}
+            handleGet () \():() %{u: effect get () -> ()}
+            trigger effect get () -> () ()
+        )",
+        "! -> ()",
+    );
+    evaluate_check_type(
+        r"\x:! x.\handler: [E] [R] (() -> %{effect err E -> !} R) -> enum {ok: R, err: E}
+        (
+            handler \():()
+            trigger effect err bool -> ! true
+        )",
+        "! -> enum {err: bool, ok: !}",
+    );
+}

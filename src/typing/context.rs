@@ -4,7 +4,7 @@ use typed_arena::Arena;
 
 use crate::{
     intern::InternedArena,
-    reprs::common::Lvl,
+    reprs::common::{Label, Lvl},
     typing::{InternedType, error::IllegalError, ty::Type},
 };
 
@@ -18,6 +18,11 @@ macro_rules! ctx {
     ($([$($bounds:tt)*])* | ty_var $(; $($rest:tt)+)?) => {
         ctx!($([$($bounds)*])* [
             $crate::typing::context::TyVarContext<'a, TyVar = $crate::typing::TyVar<'a>>
+        ] | $($($rest)+)?)
+    };
+    ($([$($bounds:tt)*])* | eff_var $(; $($rest:tt)+)?) => {
+        ctx!($([$($bounds)*])* [
+            $crate::typing::context::EffVarContext<'a, EffVar = $crate::typing::EffVar<'a>>
         ] | $($($rest)+)?)
     };
     ($([$($bounds:tt)*])* |) => {
@@ -102,6 +107,33 @@ pub(super) trait TyVarContext<'a> {
     fn next_ty_var_level(&self) -> Lvl;
 
     fn get_ty_vars(&self) -> impl Iterator<Item = (&'a str, Self::TyVar)>;
+}
+
+pub(super) trait EffVarContext<'a> {
+    type EffVar;
+
+    fn push_eff_var(&self, eff_var_label: Label<'a>, eff_var: Self::EffVar) -> Self;
+
+    fn get_eff_var(&self, level: Lvl) -> Option<(Label<'a>, Self::EffVar)>;
+
+    #[track_caller]
+    fn get_eff_var_unwrap(
+        &self,
+        level: Lvl,
+    ) -> Result<(Label<'a>, Self::EffVar), IllegalError<'static>> {
+        // explicit match to allow `#[track_caller]`
+        match self.get_eff_var(level) {
+            Some(eff_var) => Ok(eff_var),
+            None => Err(IllegalError::new(
+                format!("effect variable level not found: {level:?}"),
+                None,
+            )),
+        }
+    }
+
+    fn next_eff_var_level(&self) -> Lvl;
+
+    // fn get_eff_vars(&self) -> impl Iterator<Item = (&'a str, Self::EffVar)>;
 }
 
 pub(super) struct MultiContext<TyArena = (), TyVar = ()>(pub TyArena, pub TyVar);

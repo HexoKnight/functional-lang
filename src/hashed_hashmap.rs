@@ -6,6 +6,8 @@ use std::{
 use derive_where::derive_where;
 use itertools::Itertools;
 
+// TODO: test removing `pub`
+#[derive(Clone)]
 #[derive_where(Default, Eq, PartialEq; HashMap<K, V>)]
 pub struct HashedHashMap<K, V>(pub HashMap<K, V>);
 
@@ -31,8 +33,21 @@ where
 
 impl<K: Hash + Ord, V: Hash> Hash for HashedHashMap<K, V> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        for kv in self.0.iter().sorted_unstable_by_key(|(k, _)| *k) {
+        for kv in self.iter_sorted() {
             kv.hash(state);
         }
+    }
+}
+
+impl<K, V> HashedHashMap<K, V> {
+    pub fn iter_sorted(&self) -> impl Iterator<Item = (&K, &V)>
+    where
+        K: Ord,
+    {
+        self.0.iter().sorted_unstable_by_key(|(k, _)| *k)
+    }
+
+    pub fn iter_unsorted(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.0.iter()
     }
 }

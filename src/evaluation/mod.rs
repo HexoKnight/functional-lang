@@ -209,6 +209,8 @@ impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for Term<'i> {
                 .1
                 // TODO: maybe try eliminate this clone??
                 .clone(),
+            RawTerm::Handle { name } => todo!(),
+            RawTerm::Trigger { name } => todo!(),
             RawTerm::Import(import_id) => ctx
                 .get_import(*import_id)
                 .ok_or_else(|| {
