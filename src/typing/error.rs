@@ -344,7 +344,7 @@ impl<'i> ContextError<'i> {
             context_buf.push_str(&text);
         }
         if let Some(cause) = cause {
-            context_buf.push_str("\nencountered illegal error: ");
+            context_buf.push_str("\nencountered illegal error:\n");
             context_buf.push_str(&cause.msg);
 
             cause.push_groups(buf);

@@ -1,17 +1,18 @@
-use std::{convert::Infallible, iter::Sum};
+use std::iter::{Sum, chain};
 
 use itertools::{Itertools, zip_eq};
 
 use crate::{
     common::WithInfo,
     reprs::common::{
-        ArgStructure, ArgTermStructure, ArgTypeStructure, Label, Lvl, RawArgStructure,
+        ArgStructure, ArgTermStructure, ArgTypeStructure, Lvl, RawArgStructure,
         RawArgTermStructure, Span,
     },
     typing::{
         context::TyArenaContext,
-        effects::{Effect, EffectGroup},
-        error::{SpannedError, TypeCheckResult},
+        effects::{EffId, Effect, EffectGroup},
+        error::{IllegalError, SpannedError, TypeCheckResult},
+        map_vars::MapVars,
         subtyping::expect_type,
         ty::{TyBounds, TyDisplay, Type},
     },
@@ -23,6 +24,7 @@ mod context;
 mod effects;
 mod error;
 mod eval;
+mod map_vars;
 mod merge;
 mod subtyping;
 mod ty;
@@ -58,12 +60,37 @@ impl TyConfig {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub(super) struct TyEffLvl {
+    ty: Lvl,
+    eff: Lvl,
+}
+
+impl TyEffLvl {
+    pub fn new(ty: Lvl, eff: Lvl) -> Self {
+        Self { ty, eff }
+    }
+
+    pub fn map_ty(self, mut f: impl FnMut(Lvl) -> Lvl) -> Self {
+        Self {
+            ty: f(self.ty),
+            ..self
+        }
+    }
+    pub fn map_eff(self, mut f: impl FnMut(Lvl) -> Lvl) -> Self {
+        Self {
+            eff: f(self.eff),
+            ..self
+        }
+    }
+}
+
 /// anytime this is accessed, we must make sure any
 /// referenced types are valid in the current context
 #[derive(Copy, Clone)]
 enum TyVar<'a> {
-    Type(InternedType<'a>),
-    Bounded(TyBounds<'a>),
+    Type { ty: InternedType<'a>, eff_lvl: Lvl },
+    Bounded { bounds: TyBounds<'a>, eff_lvl: Lvl },
     Rec,
 }
 
@@ -71,17 +98,20 @@ enum TyVar<'a> {
 /// referenced types are valid in the current context
 #[derive(Copy, Clone)]
 enum EffVar<'a> {
-    Effect(Effect<'a>, Lvl),
+    Effect { effect: Effect<'a>, ty_lvl: Lvl },
+    Unbound,
 }
+
 impl<'a> EffVar<'a> {
-    fn get_name(&self) -> Label<'a> {
+    fn get_id(&self, level: Lvl) -> EffId<'a> {
         match self {
-            EffVar::Effect(effect, _) => effect.get_name(),
+            EffVar::Effect { effect, ty_lvl: _ } => effect.get_id(),
+            EffVar::Unbound => EffId::Unbound(level),
         }
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 enum Variance {
     Constant,
     Covariant,
@@ -116,69 +146,119 @@ impl Sum<Self> for Variance {
     }
 }
 
-impl Type<'_> {
-    fn get_variance_of(&self, ty_var_level: Lvl) -> Variance {
+impl<'a> Type<'a> {
+    fn get_variance_of(
+        &self,
+        ty_var_level: Lvl,
+        ctx: &ctx!(ty_var; eff_var),
+    ) -> Result<Variance, IllegalError<'static>> {
+        fn get_variance_in_effect<'a>(
+            effect: &Effect<'a>,
+            ty_var_level: Lvl,
+            ctx: &ctx!(ty_var; eff_var),
+        ) -> Result<Variance, IllegalError<'static>> {
+            match effect {
+                Effect::Def {
+                    name: _,
+                    arg,
+                    result,
+                } => [
+                    arg.get_variance_of(ty_var_level, ctx),
+                    result
+                        .get_variance_of(ty_var_level, ctx)
+                        .map(Variance::invert),
+                ]
+                .into_iter()
+                .sum(),
+                Effect::Var(level, _) => Ok(
+                    if let (_, EffVar::Effect { effect, ty_lvl }) =
+                        ctx.get_eff_var_unwrap(*level)?
+                        && ty_lvl.deeper_than(ty_var_level)
+                    {
+                        get_variance_in_effect(&effect, ty_var_level, ctx)?
+                    } else {
+                        Variance::Constant
+                    },
+                ),
+            }
+        }
+
         match self {
+            Type::Unknown => Err(IllegalError::new(
+                "tried to get variance of unknown type",
+                None,
+            )),
             Type::TyAbs {
-                name: _,
-                bounds: TyBounds { upper, lower },
+                name,
+                bounds: bounds @ TyBounds { upper, lower },
                 result,
             } => [
                 upper
-                    .map(|t| t.get_variance_of(ty_var_level).invert())
-                    .unwrap_or(Variance::Constant),
+                    .map(|t| t.get_variance_of(ty_var_level, ctx).map(Variance::invert))
+                    .unwrap_or(Ok(Variance::Constant)),
                 lower
-                    .map(|t| t.get_variance_of(ty_var_level))
-                    .unwrap_or(Variance::Constant),
-                result.get_variance_of(ty_var_level),
+                    .map(|t| t.get_variance_of(ty_var_level, ctx))
+                    .unwrap_or(Ok(Variance::Constant)),
+                result.get_variance_of(
+                    ty_var_level,
+                    &ctx.push_ty_var(
+                        name,
+                        TyVar::Bounded {
+                            bounds: *bounds,
+                            eff_lvl: ctx.next_eff_var_level(),
+                        },
+                    ),
+                ),
             ]
             .into_iter()
             .sum(),
-            Type::RecAbs { name: _, result } => result.get_variance_of(ty_var_level),
-            Type::TyVar(lvl) => {
-                if *lvl == ty_var_level {
-                    Variance::Covariant
+            Type::RecAbs { name, result } => {
+                result.get_variance_of(ty_var_level, &ctx.push_ty_var(name, TyVar::Rec))
+            }
+            Type::EffAbs { name, result } => {
+                result.get_variance_of(ty_var_level, &ctx.push_eff_var(name.0, EffVar::Unbound))
+            }
+            Type::TyVar(level) => {
+                if *level == ty_var_level {
+                    Ok(Variance::Covariant)
+                } else if level.deeper_than(ty_var_level)
+                    && let (_, TyVar::Type { ty, eff_lvl: _ }) = ctx.get_ty_var_unwrap(*level)?
+                {
+                    ty.get_variance_of(ty_var_level, ctx)
                 } else {
-                    Variance::Constant
+                    Ok(Variance::Constant)
                 }
             }
-            Type::TyObj(ty) => ty.get_variance_of(ty_var_level),
+            Type::TyObj(ty) => ty.get_variance_of(ty_var_level, ctx),
             Type::Arr {
                 arg,
                 effects,
                 result,
-            } => arg
-                .get_variance_of(ty_var_level)
-                .invert()
-                .add(
-                    effects
-                        .iter_sorted()
-                        .map(|(_, e)| match e {
-                            Effect::Def {
-                                name: _,
-                                arg,
-                                result,
-                            } => arg
-                                .get_variance_of(ty_var_level)
-                                .add(result.get_variance_of(ty_var_level).invert()),
-                        })
-                        .sum(),
-                )
-                .add(result.get_variance_of(ty_var_level)),
+            } => [
+                arg.get_variance_of(ty_var_level, ctx).map(Variance::invert),
+                effects
+                    .iter_sorted()
+                    .map(|(_, effect)| get_variance_in_effect(effect, ty_var_level, ctx))
+                    .sum(),
+                result.get_variance_of(ty_var_level, ctx),
+            ]
+            .into_iter()
+            .sum(),
             Type::Enum(variants) => variants
                 .0
                 .values()
-                .map(|t| t.get_variance_of(ty_var_level))
+                .map(|t| t.get_variance_of(ty_var_level, ctx))
                 .sum(),
             Type::Record(fields) => fields
                 .0
                 .values()
-                .map(|t| t.get_variance_of(ty_var_level))
+                .map(|t| t.get_variance_of(ty_var_level, ctx))
                 .sum(),
-            Type::Tuple(elems) => elems.iter().map(|t| t.get_variance_of(ty_var_level)).sum(),
-            // the unknown type should in fact never appear here but we allow it because
-            // throwing an error would complicate this function
-            Type::Bool | Type::Any | Type::Never | Type::Unknown => Variance::Constant,
+            Type::Tuple(elems) => elems
+                .iter()
+                .map(|t| t.get_variance_of(ty_var_level, ctx))
+                .sum(),
+            Type::Bool | Type::Any | Type::Never => Ok(Variance::Constant),
         }
     }
 }
@@ -199,7 +279,7 @@ impl<'a> Type<'a> {
     fn destructure<'i, 's>(
         &'a self,
         arg_structure: &'s ArgStructure<'i>,
-        ctx: &ctx!(arena; ty_var),
+        ctx: &ctx!(arena; ty_var; eff_var),
     ) -> Result<
         (
             ArgTermStructure<'i>,
@@ -221,7 +301,7 @@ impl<'a> Type<'a> {
                 &mut TyVec<'i, 'a>,
             ) -> Result<WithInfo<Span<'i>, A2>, TypeCheckError<'i>>,
             wrap: impl Fn(RawArgStructure<'i, WithInfo<Span<'i>, A2>>) -> A2,
-            ctx: &ctx!(arena; ty_var),
+            ctx: &ctx!(arena; ty_var; eff_var),
         ) -> Result<A2, TypeCheckError<'i>> {
             let arg_structure = match arg_structure {
                 RawArgStructure::Record(st_fields) => {
@@ -305,7 +385,7 @@ impl<'a> Type<'a> {
             ty: InternedType<'a>,
             var_tys: &mut TyVec<'i, 'a>,
             ty_vars: &mut TyVec<'i, 'a>,
-            ctx: &ctx!(arena; ty_var),
+            ctx: &ctx!(arena; ty_var; eff_var),
         ) -> Result<ArgTermStructure<'i>, TypeCheckError<'i>> {
             let WithInfo(span, arg_structure) = arg_structure;
 
@@ -349,7 +429,7 @@ impl<'a> Type<'a> {
             arg_structure: &'s ArgTypeStructure<'i>,
             ty: InternedType<'a>,
             tys: &mut TyVec<'i, 'a>,
-            ctx: &ctx!(arena; ty_var),
+            ctx: &ctx!(arena; ty_var; eff_var),
         ) -> Result<(), TypeCheckError<'i>> {
             let WithInfo(span, arg_structure) = arg_structure;
 
@@ -386,7 +466,7 @@ impl<'a> Type<'a> {
         arg: &'a Self,
         arg_span: Span<'i>,
         ty_config: TyConfig,
-        ctx: &ctx!(arena 'inn; ty_var),
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
     ) -> Result<&'a Self, TypeCheckError<'i>>
     where
         'a: 'inn,
@@ -438,16 +518,100 @@ impl<'a> Type<'a> {
                 },
             )?;
         }
-        let ty = result.substitute_ty_var(ctx.next_ty_var_level(), arg, ctx);
+        let ty = result.substitute_ty_var(ctx.next_ty_eff_level(), arg, ctx);
         Ok(ty)
     }
 
-    fn try_map_ty_vars<E>(
+    fn apply_eff_arg<'i, 'inn>(
         &'a self,
-        f: &mut impl FnMut(Lvl, Lvl) -> Result<&'a Self, E>,
-        level: Lvl,
+        self_span: Span<'i>,
+        effects: &EffectGroup<'a>,
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
+    ) -> Result<&'a Self, TypeCheckError<'i>>
+    where
+        'a: 'inn,
+    {
+        let Type::EffAbs { name: _, result } = self.upper_concrete(ctx)? else {
+            Err(SpannedError::new(
+                "type mismatch",
+                format!(
+                    "cannot apply an effect argument to type: `{}`",
+                    self.display(ctx)?
+                ),
+                "",
+                self_span,
+            ))?
+        };
+        let ty = result.substitute_eff_var(
+            ctx.next_ty_eff_level(),
+            ctx.next_ty_eff_level(),
+            effects,
+            ctx,
+        );
+        Ok(ty)
+    }
+
+    fn substitute_ty_var(
+        &'a self,
+        prev_ty_eff_lvl: TyEffLvl,
+        ty: &'a Self,
         ctx: &impl TyArenaContext<'a>,
-    ) -> Result<&'a Self, E> {
+    ) -> &'a Self {
+        self.map_vars(
+            |ty_level, ty_eff_lvl| {
+                if ty_level == prev_ty_eff_lvl.ty {
+                    return ty.deepen(prev_ty_eff_lvl, ty_eff_lvl, ctx);
+                }
+                let new_level = match ty_level.shallower() {
+                    // deeper than replaced but not equal (due to prev arm)
+                    Some(shallower) if ty_level.deeper_than(prev_ty_eff_lvl.ty) => shallower,
+                    // either:
+                    // - shallowest so could not be strictly deeper
+                    // - not deeper
+                    None | Some(_) => ty_level,
+                };
+                ctx.intern(Type::TyVar(new_level))
+            },
+            |eff_level, eff_kind, _| Effect::Var(eff_level, eff_kind),
+            prev_ty_eff_lvl,
+            ctx,
+        )
+    }
+    /// substitutes all `ty_var`s between `ty_eff_lvl.ty` (inclusive) and `ty_eff_lvl.ty + tys.len()` (exclusive)
+    fn substitute_ty_vars(
+        &'a self,
+        ty_eff_lvl: TyEffLvl,
+        tys: &[&'a Self],
+        ctx: &impl TyArenaContext<'a>,
+    ) -> &'a Self {
+        self.map_vars(
+            |ty_level, new_ty_eff_lvl| {
+                let Some(deeper) = ty_level.get_deeper_than(ty_eff_lvl.ty) else {
+                    // not deeper so no translation necessary
+                    return ctx.intern(Type::TyVar(ty_level));
+                };
+                let ty = match deeper.get_or_beyond(tys) {
+                    Ok(ty) => ty,
+                    Err(beyond) => {
+                        // beyond the substituted vars so we translate down
+                        return ctx.intern(Type::TyVar(ty_eff_lvl.ty.deeper_by(beyond)));
+                    }
+                };
+                ty.deepen(ty_eff_lvl, new_ty_eff_lvl, ctx)
+            },
+            |eff_level, eff_kind, _| Effect::Var(eff_level, eff_kind),
+            ty_eff_lvl,
+            ctx,
+        )
+    }
+
+    fn substitute_eff_var(
+        &'a self,
+        prev_ty_eff_lvl: TyEffLvl,
+        new_ty_eff_lvl: TyEffLvl,
+        effects: &EffectGroup<'a>,
+        ctx: &impl TyArenaContext<'a>,
+    ) -> &'a Self {
         let ty = match self {
             Type::TyAbs {
                 name,
@@ -456,194 +620,144 @@ impl<'a> Type<'a> {
             } => Type::TyAbs {
                 name,
                 bounds: TyBounds {
-                    upper: upper
-                        .map(|t| t.try_map_ty_vars(f, level, ctx))
-                        .transpose()?,
-                    lower: lower
-                        .map(|t| t.try_map_ty_vars(f, level, ctx))
-                        .transpose()?,
+                    upper: upper.map(|t| {
+                        t.substitute_eff_var(prev_ty_eff_lvl, new_ty_eff_lvl, effects, ctx)
+                    }),
+                    lower: lower.map(|t| {
+                        t.substitute_eff_var(prev_ty_eff_lvl, new_ty_eff_lvl, effects, ctx)
+                    }),
                 },
-                result: result.try_map_ty_vars(f, level.deeper(), ctx)?,
+                result: result.substitute_eff_var(
+                    prev_ty_eff_lvl,
+                    new_ty_eff_lvl.map_ty(Lvl::deeper),
+                    effects,
+                    ctx,
+                ),
             },
             Type::RecAbs { name, result } => Type::RecAbs {
                 name,
-                result: result.try_map_ty_vars(f, level.deeper(), ctx)?,
+                result: result.substitute_eff_var(
+                    prev_ty_eff_lvl,
+                    new_ty_eff_lvl.map_ty(Lvl::deeper),
+                    effects,
+                    ctx,
+                ),
             },
-            Type::TyVar(ty_level) => return f(*ty_level, level),
-            Type::TyObj(ty) => Type::TyObj(ty.try_map_ty_vars(f, level, ctx)?),
+            Type::EffAbs { name, result } => Type::EffAbs {
+                name: *name,
+                result: result.substitute_eff_var(
+                    prev_ty_eff_lvl,
+                    new_ty_eff_lvl.map_eff(Lvl::deeper),
+                    effects,
+                    ctx,
+                ),
+            },
+            Type::TyVar(_) => return self,
+            Type::TyObj(ty) => {
+                Type::TyObj(ty.substitute_eff_var(prev_ty_eff_lvl, new_ty_eff_lvl, effects, ctx))
+            }
             Type::Arr {
                 arg,
-                effects,
+                effects: arr_effects,
                 result,
             } => Type::Arr {
-                arg: arg.try_map_ty_vars(f, level, ctx)?,
-                effects: effects.try_map(|_, effect| {
-                    Ok(match effect {
-                        Effect::Def { name, arg, result } => Effect::Def {
-                            name: *name,
-                            arg: arg.try_map_ty_vars(f, level, ctx)?,
-                            result: result.try_map_ty_vars(f, level, ctx)?,
-                        },
-                    })
-                })?,
-                result: result.try_map_ty_vars(f, level, ctx)?,
+                arg: arg.substitute_eff_var(prev_ty_eff_lvl, new_ty_eff_lvl, effects, ctx),
+                effects: {
+                    if arr_effects
+                        .get_anonymous(EffId::Unbound(prev_ty_eff_lvl.eff))
+                        .is_some()
+                    {
+                        chain(
+                            effects
+                                .iter_unsorted()
+                                .map(|(l, e)| (l, e.deepen(prev_ty_eff_lvl, new_ty_eff_lvl, ctx))),
+                            arr_effects.iter_unsorted().filter_map(|(l, effect)| {
+                                let effect = match effect {
+                                    Effect::Def { name, arg, result } => Effect::Def {
+                                        name: *name,
+                                        arg: arg.substitute_eff_var(
+                                            prev_ty_eff_lvl,
+                                            new_ty_eff_lvl,
+                                            effects,
+                                            ctx,
+                                        ),
+                                        result: result.substitute_eff_var(
+                                            prev_ty_eff_lvl,
+                                            new_ty_eff_lvl,
+                                            effects,
+                                            ctx,
+                                        ),
+                                    },
+                                    Effect::Var(lvl, _) => {
+                                        if *lvl == prev_ty_eff_lvl.eff {
+                                            return None;
+                                        } else {
+                                            *effect
+                                        }
+                                    }
+                                };
+                                Some((l, effect))
+                            }),
+                        )
+                        .collect()
+                    } else {
+                        arr_effects.clone()
+                    }
+                },
+                result: result.substitute_eff_var(prev_ty_eff_lvl, new_ty_eff_lvl, effects, ctx),
             },
             Type::Enum(variants) => Type::Enum(
                 variants
                     .0
                     .iter()
-                    .map(|(l, t)| t.try_map_ty_vars(f, level, ctx).map(|t| (*l, t)))
-                    .try_collect()?,
+                    .map(|(l, t)| {
+                        (
+                            *l,
+                            t.substitute_eff_var(prev_ty_eff_lvl, new_ty_eff_lvl, effects, ctx),
+                        )
+                    })
+                    .collect(),
             ),
             Type::Record(fields) => Type::Record(
                 fields
                     .0
                     .iter()
-                    .map(|(l, t)| t.try_map_ty_vars(f, level, ctx).map(|t| (*l, t)))
-                    .try_collect()?,
+                    .map(|(l, t)| {
+                        (
+                            *l,
+                            t.substitute_eff_var(prev_ty_eff_lvl, new_ty_eff_lvl, effects, ctx),
+                        )
+                    })
+                    .collect(),
             ),
             Type::Tuple(elems) => Type::Tuple(
                 elems
                     .iter()
-                    .map(|e| e.try_map_ty_vars(f, level, ctx))
-                    .try_collect()?,
+                    .map(|e| e.substitute_eff_var(prev_ty_eff_lvl, new_ty_eff_lvl, effects, ctx))
+                    .collect(),
             ),
-            Type::Bool | Type::Any | Type::Never | Type::Unknown => return Ok(self),
+            Type::Bool | Type::Any | Type::Never | Type::Unknown => return self,
         };
 
-        Ok(ctx.intern(ty))
-    }
-
-    fn map_ty_vars(
-        &'a self,
-        mut f: impl FnMut(Lvl, Lvl) -> &'a Self,
-        level: Lvl,
-        ctx: &impl TyArenaContext<'a>,
-    ) -> &'a Self {
-        let Ok(res) =
-            self.try_map_ty_vars(&mut |ty_l, l| Ok::<_, Infallible>(f(ty_l, l)), level, ctx);
-        res
-    }
-
-    fn try_map_ty_vars_no_level<E>(
-        &'a self,
-        mut f: impl FnMut(Lvl) -> Result<&'a Self, E>,
-        ctx: &impl TyArenaContext<'a>,
-    ) -> Result<&'a Self, E> {
-        self.try_map_ty_vars(&mut |l, _| f(l), Lvl::get_depth(&[(); 0]), ctx)
-    }
-    fn map_ty_vars_no_level(
-        &'a self,
-        mut f: impl FnMut(Lvl) -> &'a Self,
-        ctx: &impl TyArenaContext<'a>,
-    ) -> &'a Self {
-        self.map_ty_vars(&mut |l, _| f(l), Lvl::get_depth(&[(); 0]), ctx)
-    }
-
-    fn substitute_ty_var(
-        &'a self,
-        ty_old_level: Lvl,
-        ty: &'a Self,
-        ctx: &impl TyArenaContext<'a>,
-    ) -> &'a Self {
-        self.map_ty_vars(
-            |ty_level, level| {
-                if ty_level == ty_old_level {
-                    return ty.deepen(ty_old_level, level, ctx);
-                }
-                let new_level = match ty_level.shallower() {
-                    // deeper than replaced but not equal (due to prev arm)
-                    Some(shallower) if ty_level.deeper_than(ty_old_level) => shallower,
-                    // either:
-                    // - shallowest so could not be strictly deeper
-                    // - not deeper
-                    None | Some(_) => ty_level,
-                };
-                ctx.intern(Type::TyVar(new_level))
-            },
-            ty_old_level,
-            ctx,
-        )
-    }
-    /// substitutes all the `ty_var`s between `depth` (inclusive) and `depth + tys.len()` (exclusive)
-    fn substitute_ty_vars(
-        &'a self,
-        depth: Lvl,
-        tys: &[&'a Self],
-        ctx: &impl TyArenaContext<'a>,
-    ) -> &'a Self {
-        self.map_ty_vars(
-            |ty_level, level| {
-                let Some(deeper) = ty_level.get_deeper_than(depth) else {
-                    // not deeper so no translation necessary
-                    return ctx.intern(Type::TyVar(ty_level));
-                };
-                let ty = match deeper.get_or_beyond(tys) {
-                    Ok(ty) => ty,
-                    Err(beyond) => {
-                        // beyond the substituted vars so we translate down
-                        return ctx.intern(Type::TyVar(depth.deeper_by(beyond)));
-                    }
-                };
-                if depth == level {
-                    // same depth as originally declared so no substitution necessary
-                    return ty;
-                }
-                ty.map_ty_vars(
-                    |inner_ty_level, _inner_level| {
-                        ctx.intern(Type::TyVar(
-                            // depth <= level
-                            inner_ty_level.translate(depth, level).expect(
-                                "level within map_ty_vars is never \
-                                    shallower than the level passed in",
-                            ),
-                        ))
-                    },
-                    level,
-                    ctx,
-                )
-            },
-            depth,
-            ctx,
-        )
-    }
-
-    fn deepen(
-        &'a self,
-        prev_level: Lvl,
-        new_level: Lvl,
-        ctx: &impl TyArenaContext<'a>,
-    ) -> &'a Self {
-        if prev_level == new_level {
-            return self;
-        }
-        self.map_ty_vars_no_level(
-            |ty_level| {
-                let new_ty_level = if let Some(deeper) = ty_level.get_deeper_than(prev_level) {
-                    new_level.deeper_by(deeper)
-                } else {
-                    ty_level
-                };
-                ctx.intern(Type::TyVar(new_ty_level))
-            },
-            ctx,
-        )
+        ctx.intern(ty)
     }
 
     // TODO: maybe ensure type safety by Type::Concrete(ConcreteType::{Arr, Enum, ...})
     /// Get the minimal concrete supertype
     fn upper_concrete(
         &'a self,
-        ctx: &ctx!(arena; ty_var),
-    ) -> Result<&'a Self, TypeCheckError<'static>> {
+        ctx: &ctx!(arena; ty_var; eff_var),
+    ) -> Result<&'a Self, IllegalError<'static>> {
         match self {
             Type::TyVar(level) => {
                 let (_, ty_var) = ctx.get_ty_var_unwrap(*level)?;
                 match ty_var {
-                    TyVar::Type(ty) => Ok(ty.deepen(*level, ctx.next_ty_var_level(), ctx)),
-                    TyVar::Bounded(bounds) => bounds
+                    TyVar::Type { ty, eff_lvl } => {
+                        Ok(ty.deepen(TyEffLvl::new(*level, eff_lvl), ctx.next_ty_eff_level(), ctx))
+                    }
+                    TyVar::Bounded { bounds, eff_lvl } => bounds
                         .get_upper(ctx)
-                        .deepen(*level, ctx.next_ty_var_level(), ctx)
+                        .deepen(TyEffLvl::new(*level, eff_lvl), ctx.next_ty_eff_level(), ctx)
                         .upper_concrete(ctx),
                     // we have a isorecursive view of recursive types so this is concrete
                     TyVar::Rec => Ok(self),
@@ -651,6 +765,7 @@ impl<'a> Type<'a> {
             }
             Type::TyAbs { .. }
             | Type::RecAbs { .. }
+            | Type::EffAbs { .. }
             | Type::TyObj(_)
             | Type::Arr { .. }
             | Type::Enum(..)
@@ -669,6 +784,7 @@ impl<'a> Type<'a> {
             Type::Unknown | Type::Any => None,
             Type::TyAbs { .. }
             | Type::RecAbs { .. }
+            | Type::EffAbs { .. }
             | Type::TyVar { .. }
             | Type::TyObj(_)
             | Type::Arr { .. }
@@ -686,6 +802,7 @@ impl<'a> Type<'a> {
             Type::Unknown | Type::Never => None,
             Type::TyAbs { .. }
             | Type::RecAbs { .. }
+            | Type::EffAbs { .. }
             | Type::TyVar { .. }
             | Type::TyObj(_)
             | Type::Arr { .. }
@@ -703,6 +820,7 @@ impl<'a> Type<'a> {
             Type::Unknown => None,
             Type::TyAbs { .. }
             | Type::RecAbs { .. }
+            | Type::EffAbs { .. }
             | Type::TyVar { .. }
             | Type::TyObj(_)
             | Type::Arr { .. }

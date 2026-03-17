@@ -860,3 +860,45 @@ fn effects() {
         "! -> enum {err: bool, ok: !}",
     );
 }
+
+#[test]
+fn effect_abstraction() {
+    type_check_failure(r"?%E \f: () -> %{e: E} () ()");
+
+    evaluate_check_type(
+        r"?%E \f: () -> %{E} ()
+        f ()",
+        "[%E] (() -> %{E} ()) -> %{E} ()",
+    );
+
+    evaluate_check_type(
+        r"\x:! x.\handler: [%E] (() -> %{E, effect err bool -> !} ()) -> %{E} ()
+        (
+            handler \():()
+            trigger effect err bool -> ! true
+        ) .\() (
+            handler \():() %{errA: effect err bool -> !}
+            handler \():() %{errB: effect err bool -> !}
+            trigger effect err bool -> ! %{errA} true
+        )",
+        "! -> ()",
+    );
+}
+
+#[test]
+fn test() {
+    evaluate_check_type(
+        r"\x:!
+        x.\handler: [E] [R] [%E] (() -> %{E, effect err E -> !} R) -> %{E} R
+        (?E trigger effect err E -> !)
+            .\throw: [E] E -> %{effect err E -> !} !
+        (
+            handler \():() %{effect err bool -> !}
+            handler \():() %{effect err () -> !}
+            (
+                throw (),
+            )
+        )",
+        "! -> ()",
+    );
+}

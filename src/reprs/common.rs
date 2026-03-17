@@ -138,7 +138,7 @@ impl Idx {
 }
 
 /// de Bruijn level
-#[derive(Hash, Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Hash, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub struct Lvl(usize);
 
 impl Lvl {

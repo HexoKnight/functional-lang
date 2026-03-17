@@ -1,12 +1,12 @@
 use std::hash::Hash;
 
-use itertools::Itertools;
+use itertools::{Itertools, Position};
 
 use crate::{
     hashed_hashmap::HashedHashMap,
     reprs::common::{Label, Lvl},
     typing::{
-        context::{TyArenaContext, TyVarContext, TyVarStack},
+        context::{EffVarContext, TyArenaContext, TyEffVarStack, TyVarContext},
         effects::{Effect, EffectGroup},
         error::IllegalError,
     },
@@ -27,6 +27,12 @@ pub enum Type<'ctx> {
     },
     RecAbs {
         name: &'ctx str,
+        result: TypeRef<'ctx>,
+    },
+    EffAbs {
+        // disables some type interning but comparing type abstractions is uncommon and displaying
+        // useful type information is more important
+        name: Label<'ctx>,
         result: TypeRef<'ctx>,
     },
 
@@ -58,6 +64,10 @@ pub enum Type<'ctx> {
     Unknown,
 }
 
+// a sentinel value used as TyAbs::name to represent an applied (ie. concrete) bounds
+// notably it must not be nameable so cannot be a valid type var name
+pub(super) const CONCRETE_TY_APP_NAME: &str = "$";
+
 #[derive(Copy, Clone, Hash, Eq, PartialEq)]
 pub struct TyBounds<'ctx> {
     pub upper: Option<TypeRef<'ctx>>,
@@ -73,29 +83,30 @@ impl<'ctx> TyBounds<'ctx> {
     }
 }
 
+type VarStack<'ctx> = TyEffVarStack<'ctx, (), ()>;
+
 pub trait TyDisplay<'ctx> {
     fn write_display(
         &self,
-        ctx: &TyVarStack<'ctx, ()>,
+        ctx: &VarStack<'ctx>,
         w: &mut String,
     ) -> Result<(), IllegalError<'static>>;
 
-    fn display(
-        &self,
-        ctx: impl Into<TyVarStack<'ctx, ()>>,
-    ) -> Result<String, IllegalError<'static>> {
+    #[track_caller]
+    fn display(&self, ctx: impl Into<VarStack<'ctx>>) -> Result<String, IllegalError<'static>> {
         let mut string = String::new();
         self.write_display(&ctx.into(), &mut string)?;
         Ok(string)
     }
 
-    fn is_empty(&self, ctx: &TyVarStack<'ctx, ()>) -> Result<bool, IllegalError<'static>>;
+    fn is_empty(&self, ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>>;
 }
 
 impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
+    #[track_caller]
     fn write_display(
         &self,
-        ctx: &TyVarStack<'ctx, ()>,
+        ctx: &VarStack<'ctx>,
         w: &mut String,
     ) -> Result<(), IllegalError<'static>> {
         match self {
@@ -118,6 +129,12 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
                 w.push_str(name);
                 w.push(' ');
                 result.write_display(&ctx.push_ty_var(name, ()), w)?;
+            }
+            Type::EffAbs { name, result } => {
+                w.push_str("[%");
+                w.push_str(name.0);
+                w.push_str("] ");
+                result.write_display(&ctx.push_eff_var(name.0, ()), w)?;
             }
             Type::TyVar(level) => {
                 w.push_str(ctx.get_ty_var_unwrap(*level)?.0);
@@ -143,23 +160,9 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
                     w.push_str(" -> ");
                 }
 
-                // not 100% sure why the types cannot be inferred
-                let display_effect = |name: Option<Label>, effect: &Effect, w: &mut String| {
-                    if let Some(name) = name {
-                        w.push_str(name.0);
-                        w.push_str(": ");
-                    }
-                    effect.write_display(ctx, w)
-                };
-                let mut iter = effects.iter_sorted();
-                if let Some((name, effect)) = iter.next() {
-                    w.push_str("%{");
-                    display_effect(name, effect, w)?;
-                    for (name, effect) in iter {
-                        w.push_str(", ");
-                        display_effect(name, effect, w)?;
-                    }
-                    w.push_str("} ");
+                if !effects.is_empty() {
+                    effects.write_display(ctx, w)?;
+                    w.push(' ');
                 }
                 result.write_display(ctx, w)?;
             }
@@ -220,7 +223,7 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
         Ok(())
     }
 
-    fn is_empty(&self, _ctx: &TyVarStack<'ctx, ()>) -> Result<bool, IllegalError<'static>> {
+    fn is_empty(&self, _ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>> {
         Ok(false)
     }
 }
@@ -228,7 +231,7 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
 impl<'ctx> TyDisplay<'ctx> for TyBounds<'ctx> {
     fn write_display(
         &self,
-        ctx: &TyVarStack<'ctx, ()>,
+        ctx: &VarStack<'ctx>,
         w: &mut String,
     ) -> Result<(), IllegalError<'static>> {
         let Self { upper, lower } = self;
@@ -247,7 +250,7 @@ impl<'ctx> TyDisplay<'ctx> for TyBounds<'ctx> {
         Ok(())
     }
 
-    fn is_empty(&self, _ctx: &TyVarStack<'ctx, ()>) -> Result<bool, IllegalError<'static>> {
+    fn is_empty(&self, _ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>> {
         let Self { upper, lower } = self;
 
         Ok(upper.is_none() && lower.is_none())
@@ -255,9 +258,10 @@ impl<'ctx> TyDisplay<'ctx> for TyBounds<'ctx> {
 }
 
 impl<'ctx> TyDisplay<'ctx> for Effect<'ctx> {
+    #[track_caller]
     fn write_display(
         &self,
-        ctx: &TyVarStack<'ctx, ()>,
+        ctx: &VarStack<'ctx>,
         w: &mut String,
     ) -> Result<(), IllegalError<'static>> {
         match self {
@@ -269,11 +273,44 @@ impl<'ctx> TyDisplay<'ctx> for Effect<'ctx> {
                 w.push_str(" -> ");
                 result.write_display(ctx, w)?;
             }
+            Effect::Var(level, _) => {
+                w.push_str(ctx.get_eff_var_unwrap(*level)?.0);
+            }
         }
         Ok(())
     }
 
-    fn is_empty(&self, _ctx: &TyVarStack<'ctx, ()>) -> Result<bool, IllegalError<'static>> {
+    fn is_empty(&self, _ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>> {
+        Ok(false)
+    }
+}
+
+impl<'ctx> TyDisplay<'ctx> for EffectGroup<'ctx> {
+    #[track_caller]
+    fn write_display(
+        &self,
+        ctx: &VarStack<'ctx>,
+        w: &mut String,
+    ) -> Result<(), IllegalError<'static>> {
+        w.push_str("%{");
+        for (pos, (name, effect)) in self.iter_sorted().with_position() {
+            if let Some(name) = name {
+                w.push_str(name.0);
+                w.push_str(": ");
+            }
+            effect.write_display(ctx, w)?;
+            if !self.exhaustive || matches!(pos, Position::First | Position::Middle) {
+                w.push_str(", ");
+            }
+        }
+        if !self.exhaustive {
+            w.push_str("..");
+        }
+        w.push('}');
+        Ok(())
+    }
+
+    fn is_empty(&self, _ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>> {
         Ok(false)
     }
 }

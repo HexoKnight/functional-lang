@@ -39,6 +39,15 @@ pub enum RawTerm<'i> {
         arg: Box<Type<'i>>,
     },
 
+    EffAbs {
+        name: Label<'i>,
+        body: Box<Term<'i>>,
+    },
+    EffApp {
+        abs: Box<Term<'i>>,
+        effects: EffectGroup<'i, Effect<'i>>,
+    },
+
     Var(Idx),
 
     Type(Type<'i>),
@@ -86,6 +95,15 @@ pub enum RawType<'i> {
         result: Box<Type<'i>>,
     },
 
+    EffAbs {
+        name: &'i str,
+        result: Box<Type<'i>>,
+    },
+    EffApp {
+        abs: Box<Type<'i>>,
+        effects: EffectGroup<'i, Effect<'i>>,
+    },
+
     TyVar(Lvl),
 
     Arr {
@@ -114,6 +132,7 @@ pub enum RawEffect<'i> {
         arg: Box<Type<'i>>,
         result: Box<Type<'i>>,
     },
+    Var(Lvl),
 }
 
 #[derive(Eq, PartialEq, Debug)]
