@@ -56,7 +56,8 @@ mod context {
 
         var_stack: Stack<&'i str>,
         ty_var_stack: Stack<&'i str>,
-        effect_stack: Stack<&'i str>,
+        eff_ref_stack: Stack<&'i str>,
+        eff_var_stack: Stack<&'i str>,
     }
 
     impl<'i, 'inn, IR: ImportResolver> Context<'i, 'inn, IR> {
@@ -70,7 +71,8 @@ mod context {
 
                 var_stack: Vec::new(),
                 ty_var_stack: Vec::new(),
-                effect_stack: Vec::new(),
+                eff_ref_stack: Vec::new(),
+                eff_var_stack: Vec::new(),
             }
         }
 
@@ -94,14 +96,24 @@ mod context {
             Lvl::find(&self.ty_var_stack, |ty_var| *ty_var == name)
         }
 
-        pub(super) fn push_eff_vars(&self, effects: impl IntoIterator<Item = &'i str>) -> Self {
+        pub(super) fn push_eff_refs(&self, eff_refs: impl IntoIterator<Item = &'i str>) -> Self {
             let mut new = self.clone();
-            new.effect_stack.extend(effects);
+            new.eff_ref_stack.extend(eff_refs);
+            new
+        }
+
+        pub(super) fn find_eff_ref(&self, name: &'i str) -> Option<Lvl> {
+            Lvl::find(&self.eff_ref_stack, |eff_ref| *eff_ref == name)
+        }
+
+        pub(super) fn push_eff_vars(&self, eff_vars: impl IntoIterator<Item = &'i str>) -> Self {
+            let mut new = self.clone();
+            new.eff_var_stack.extend(eff_vars);
             new
         }
 
         pub(super) fn find_eff_var(&self, name: &'i str) -> Option<Lvl> {
-            Lvl::find(&self.effect_stack, |effect| *effect == name)
+            Lvl::find(&self.eff_var_stack, |eff_var| *eff_var == name)
         }
 
         pub(super) fn resolve_relative_import(
@@ -151,7 +163,8 @@ mod error {
     pub enum VarKind {
         Normal,
         Type,
-        Effect,
+        EffRef,
+        EffVar,
     }
 
     pub enum ValidationError<'i> {
@@ -185,11 +198,12 @@ mod error {
                     span,
                 } => Level::ERROR
                     .primary_title(format!(
-                        "{}variable '{name}' not found",
+                        "{} '{name}' not found",
                         match var_kind {
-                            VarKind::Normal => "",
-                            VarKind::Type => "type ",
-                            VarKind::Effect => "effect ",
+                            VarKind::Normal => "variable",
+                            VarKind::Type => "type variable",
+                            VarKind::EffRef => "effect reference",
+                            VarKind::EffVar => "effect variable",
                         }
                     ))
                     .element(
@@ -328,7 +342,7 @@ impl<'i> Validate<'i> for ast::Term<'i> {
                     body: body.validate(
                         &ctx.push_vars(arg_vars.map(|i| i.0.text()))
                             .push_ty_vars(ty_vars.map(|i| i.0.text()))
-                            .push_eff_vars(effects.0.iter().filter_map(|(n, _)| n.map(|n| n.0))),
+                            .push_eff_refs(effects.0.iter().filter_map(|(n, _)| n.map(|n| n.0))),
                     )?,
                     effects,
                 }
@@ -346,6 +360,14 @@ impl<'i> Validate<'i> for ast::Term<'i> {
             ast::RawTerm::TyApp { func, arg } => ir::RawTerm::TyApp {
                 abs: func.validate(ctx)?,
                 arg: arg.validate(ctx)?,
+            },
+            ast::RawTerm::EffAbs { arg, body } => ir::RawTerm::EffAbs {
+                name: Label(arg.0.text()),
+                body: body.validate(&ctx.push_eff_vars(once(arg.0.text())))?,
+            },
+            ast::RawTerm::EffApp { abs, effects } => ir::RawTerm::EffApp {
+                abs: abs.validate(ctx)?,
+                effects: effects.validate(ctx)?,
             },
             ast::RawTerm::Var(ident) => {
                 let Some(index) = ctx.find_var(ident.0.text()) else {
@@ -457,6 +479,14 @@ impl<'i> Validate<'i> for ast::Type<'i> {
                 name: arg.0.text(),
                 result: result.validate(&ctx.push_ty_vars(once(arg.0.text())))?,
             },
+            ast::RawType::EffAbs { arg, result } => ir::RawType::EffAbs {
+                name: arg.0.text(),
+                result: result.validate(&ctx.push_eff_vars(once(arg.0.text())))?,
+            },
+            ast::RawType::EffApp { abs, effects } => ir::RawType::EffApp {
+                abs: abs.validate(ctx)?,
+                effects: effects.validate(ctx)?,
+            },
             ast::RawType::TyVar(ident) => {
                 let Some(level) = ctx.find_ty_var(ident.0.text()) else {
                     return Err(ValidationError::VarNotFound {
@@ -528,6 +558,16 @@ impl<'i> Validate<'i> for ast::Effect<'i> {
                 arg: arg.validate(ctx)?,
                 result: result.validate(ctx)?,
             },
+            ast::RawEffect::Var(ident) => {
+                let Some(level) = ctx.find_eff_var(ident.0.text()) else {
+                    return Err(ValidationError::VarNotFound {
+                        var_kind: VarKind::EffVar,
+                        name: ident.0.text(),
+                        span: ident.0,
+                    });
+                };
+                ir::RawEffect::Var(level)
+            }
         };
         Ok(WithInfo(*info, effect))
     }
@@ -552,9 +592,9 @@ impl<'i> Validate<'i> for ast::EffectGroup<'i, ast::Ident<'i>> {
         let ast::EffectGroup(effects) = self;
         let effects = check_unique_optional_labels(effects)
             .map_ok(|(label, ident)| {
-                let Some(level) = ctx.find_eff_var(ident.0.text()) else {
+                let Some(level) = ctx.find_eff_ref(ident.0.text()) else {
                     Err(ValidationError::VarNotFound {
-                        var_kind: VarKind::Effect,
+                        var_kind: VarKind::EffRef,
                         name: ident.0.text(),
                         span: ident.0,
                     })?

@@ -214,6 +214,22 @@ pub(crate) trait IterExt: Iterator {
 
         Ok((left, right))
     }
+
+    fn reduce_ok<T, E>(&mut self, mut f: impl FnMut(T, T) -> T) -> Result<Option<T>, E>
+    where
+        Self: Iterator<Item = Result<T, E>> + Sized,
+    {
+        let Some(first) = self.next() else {
+            return Ok(None);
+        };
+
+        let mut accum = first?;
+
+        while let Some(x) = self.next() {
+            accum = f(accum, x?);
+        }
+        Ok(Some(accum))
+    }
 }
 
 impl<I: Iterator> IterExt for I {}

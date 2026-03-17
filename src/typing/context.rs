@@ -4,8 +4,8 @@ use typed_arena::Arena;
 
 use crate::{
     intern::InternedArena,
-    reprs::common::{Label, Lvl},
-    typing::{InternedType, error::IllegalError, ty::Type},
+    reprs::common::Lvl,
+    typing::{InternedType, TyEffLvl, error::IllegalError, ty::Type},
 };
 
 // unfortunately no trait aliases
@@ -33,6 +33,22 @@ macro_rules! ctx {
     ($($args:tt)*) => {
         ctx!(| $($args)*)
     };
+}
+
+#[track_caller]
+pub(super) fn unwrap_get<T>(
+    op: Option<T>,
+    kind: &str,
+    level: Lvl,
+) -> Result<T, IllegalError<'static>> {
+    // explicit match to allow `#[track_caller]`
+    match op {
+        Some(t) => Ok(t),
+        None => Err(IllegalError::new(
+            format!("{kind} level not found: {level:?}"),
+            None,
+        )),
+    }
 }
 
 // doesn't suffer from the same dropck issues as self references
@@ -94,51 +110,67 @@ pub(super) trait TyVarContext<'a> {
         &self,
         level: Lvl,
     ) -> Result<(&'a str, Self::TyVar), IllegalError<'static>> {
-        // explicit match to allow `#[track_caller]`
-        match self.get_ty_var(level) {
-            Some(ty_var) => Ok(ty_var),
-            None => Err(IllegalError::new(
-                format!("type variable level not found: {level:?}"),
-                None,
-            )),
-        }
+        unwrap_get(self.get_ty_var(level), "type variable", level)
     }
 
     fn next_ty_var_level(&self) -> Lvl;
 
     fn get_ty_vars(&self) -> impl Iterator<Item = (&'a str, Self::TyVar)>;
+
+    fn next_ty_eff_level(&self) -> TyEffLvl
+    where
+        Self: EffVarContext<'a>,
+    {
+        TyEffLvl {
+            ty: self.next_ty_var_level(),
+            eff: self.next_eff_var_level(),
+        }
+    }
 }
 
 pub(super) trait EffVarContext<'a> {
     type EffVar;
 
-    fn push_eff_var(&self, eff_var_label: Label<'a>, eff_var: Self::EffVar) -> Self;
+    fn push_eff_var(&self, eff_var_name: &'a str, eff_var: Self::EffVar) -> Self;
 
-    fn get_eff_var(&self, level: Lvl) -> Option<(Label<'a>, Self::EffVar)>;
+    fn get_eff_var(&self, level: Lvl) -> Option<(&'a str, Self::EffVar)>;
 
     #[track_caller]
     fn get_eff_var_unwrap(
         &self,
         level: Lvl,
-    ) -> Result<(Label<'a>, Self::EffVar), IllegalError<'static>> {
-        // explicit match to allow `#[track_caller]`
-        match self.get_eff_var(level) {
-            Some(eff_var) => Ok(eff_var),
-            None => Err(IllegalError::new(
-                format!("effect variable level not found: {level:?}"),
-                None,
-            )),
-        }
+    ) -> Result<(&'a str, Self::EffVar), IllegalError<'static>> {
+        unwrap_get(self.get_eff_var(level), "effect variable", level)
     }
 
     fn next_eff_var_level(&self) -> Lvl;
 
-    // fn get_eff_vars(&self) -> impl Iterator<Item = (&'a str, Self::EffVar)>;
+    fn get_eff_vars(&self) -> impl Iterator<Item = (&'a str, Self::EffVar)>;
 }
 
-pub(super) struct MultiContext<TyArena = (), TyVar = ()>(pub TyArena, pub TyVar);
+pub(super) struct MultiContext<TyArena = (), TyEffVar = ()>(TyArena, TyEffVar);
 
-impl<'a, TyArena, TyVar> TyArenaContext<'a> for MultiContext<TyArena, TyVar>
+impl MultiContext {
+    pub(super) fn new() -> Self {
+        Self((), ())
+    }
+}
+impl<'a, TyArena, TyVar> MultiContext<TyArena, TyVar> {
+    pub(super) fn with_ty_arena<NewTyArena: TyArenaContext<'a>>(
+        self,
+        new_ty_arena: NewTyArena,
+    ) -> MultiContext<NewTyArena, TyVar> {
+        MultiContext(new_ty_arena, self.1)
+    }
+    pub(super) fn with_ty_eff_var<NewTyEffVar: TyVarContext<'a>>(
+        self,
+        new_ty_eff_var: NewTyEffVar,
+    ) -> MultiContext<TyArena, NewTyEffVar> {
+        MultiContext(self.0, new_ty_eff_var)
+    }
+}
+
+impl<'a, TyArena, TyEffVar> TyArenaContext<'a> for MultiContext<TyArena, TyEffVar>
 where
     TyArena: TyArenaContext<'a>,
 {
@@ -148,12 +180,12 @@ where
         self.0.get_inner()
     }
 }
-impl<'a, TyArena, TyVar> TyVarContext<'a> for MultiContext<TyArena, TyVar>
+impl<'a, TyArena, TyEffVar> TyVarContext<'a> for MultiContext<TyArena, TyEffVar>
 where
     TyArena: Clone,
-    TyVar: TyVarContext<'a>,
+    TyEffVar: TyVarContext<'a>,
 {
-    type TyVar = TyVar::TyVar;
+    type TyVar = TyEffVar::TyVar;
 
     fn push_ty_var(&self, ty_var_name: &'a str, ty_var: Self::TyVar) -> Self {
         Self(self.0.clone(), self.1.push_ty_var(ty_var_name, ty_var))
@@ -178,41 +210,110 @@ where
         self.1.get_ty_var_unwrap(level)
     }
 }
+impl<'a, TyArena, TyEffVar> EffVarContext<'a> for MultiContext<TyArena, TyEffVar>
+where
+    TyArena: Clone,
+    TyEffVar: EffVarContext<'a>,
+{
+    type EffVar = TyEffVar::EffVar;
+
+    fn push_eff_var(&self, eff_var_name: &'a str, eff_var: Self::EffVar) -> Self {
+        Self(self.0.clone(), self.1.push_eff_var(eff_var_name, eff_var))
+    }
+
+    fn get_eff_var(&self, level: Lvl) -> Option<(&'a str, Self::EffVar)> {
+        self.1.get_eff_var(level)
+    }
+
+    fn next_eff_var_level(&self) -> Lvl {
+        self.1.next_eff_var_level()
+    }
+
+    fn get_eff_vars(&self) -> impl Iterator<Item = (&'a str, Self::EffVar)> {
+        self.1.get_eff_vars()
+    }
+
+    fn get_eff_var_unwrap(
+        &self,
+        level: Lvl,
+    ) -> Result<(&'a str, Self::EffVar), IllegalError<'static>> {
+        self.1.get_eff_var_unwrap(level)
+    }
+}
 
 #[must_use]
 #[derive(Clone)]
-pub(super) struct TyVarStack<'a, T>(Stack<(&'a str, T)>);
+pub(super) struct TyEffVarStack<'a, T, E> {
+    ty: Stack<(&'a str, T)>,
+    eff: Stack<(&'a str, E)>,
+}
 
-impl<'a, T> FromIterator<(&'a str, T)> for TyVarStack<'a, T> {
-    fn from_iter<I: IntoIterator<Item = (&'a str, T)>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
+impl<'a, T, E> TyEffVarStack<'a, T, E> {
+    pub(super) fn new(
+        ty_vars: impl IntoIterator<Item = (&'a str, T)>,
+        eff_vars: impl IntoIterator<Item = (&'a str, E)>,
+    ) -> Self {
+        Self {
+            ty: ty_vars.into_iter().collect(),
+            eff: eff_vars.into_iter().collect(),
+        }
     }
 }
 
-impl<'a, Ctx: TyVarContext<'a>> From<&Ctx> for TyVarStack<'a, ()> {
+// impl<'a, T> FromIterator<(&'a str, T)> for TyEffVarStack<'a, T> {
+//     fn from_iter<I: IntoIterator<Item = (&'a str, T)>>(iter: I) -> Self {
+//         Self(iter.into_iter().collect())
+//     }
+// }
+
+impl<'a, Ctx: TyVarContext<'a> + EffVarContext<'a>> From<&Ctx> for TyEffVarStack<'a, (), ()> {
     fn from(value: &Ctx) -> Self {
-        value.get_ty_vars().map(|(name, _)| (name, ())).collect()
+        Self {
+            ty: value.get_ty_vars().map(|(name, _)| (name, ())).collect(),
+            eff: value.get_eff_vars().map(|(name, _)| (name, ())).collect(),
+        }
     }
 }
 
-impl<'a, T: Copy> TyVarContext<'a> for TyVarStack<'a, T> {
+impl<'a, T: Copy, E: Copy> TyVarContext<'a> for TyEffVarStack<'a, T, E> {
     type TyVar = T;
 
     fn push_ty_var(&self, ty_var_name: &'a str, ty_var: Self::TyVar) -> Self {
         let mut new = self.clone();
-        new.0.push((ty_var_name, ty_var));
+        new.ty.push((ty_var_name, ty_var));
         new
     }
 
     fn get_ty_var(&self, level: Lvl) -> Option<(&'a str, Self::TyVar)> {
-        level.get(&self.0).copied()
+        level.get(&self.ty).copied()
     }
 
     fn next_ty_var_level(&self) -> Lvl {
-        Lvl::get_depth(&self.0)
+        Lvl::get_depth(&self.ty)
     }
 
     fn get_ty_vars(&self) -> impl Iterator<Item = (&'a str, Self::TyVar)> {
-        self.0.iter().copied()
+        self.ty.iter().copied()
+    }
+}
+impl<'a, T: Copy, E: Copy> EffVarContext<'a> for TyEffVarStack<'a, T, E> {
+    type EffVar = E;
+
+    fn push_eff_var(&self, eff_var_name: &'a str, eff_var: Self::EffVar) -> Self {
+        let mut new = self.clone();
+        new.eff.push((eff_var_name, eff_var));
+        new
+    }
+
+    fn get_eff_var(&self, level: Lvl) -> Option<(&'a str, Self::EffVar)> {
+        level.get(&self.eff).copied()
+    }
+
+    fn next_eff_var_level(&self) -> Lvl {
+        Lvl::get_depth(&self.eff)
+    }
+
+    fn get_eff_vars(&self) -> impl Iterator<Item = (&'a str, Self::EffVar)> {
+        self.eff.iter().copied()
     }
 }
