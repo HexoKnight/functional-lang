@@ -29,6 +29,12 @@ pub enum Type<'ctx> {
         name: &'ctx str,
         result: TypeRef<'ctx>,
     },
+    EffAbs {
+        // disables some type interning but comparing type abstractions is uncommon and displaying
+        // useful type information is more important
+        name: Label<'ctx>,
+        result: TypeRef<'ctx>,
+    },
 
     TyVar(Lvl),
 
@@ -118,6 +124,12 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
                 w.push_str(name);
                 w.push(' ');
                 result.write_display(&ctx.push_ty_var(name, ()), w)?;
+            }
+            Type::EffAbs { name, result } => {
+                w.push_str("[%");
+                w.push_str(name.0);
+                w.push_str("] ");
+                result.write_display(&ctx.push_ty_var(name.0, ()), w)?;
             }
             Type::TyVar(level) => {
                 w.push_str(ctx.get_ty_var_unwrap(*level)?.0);

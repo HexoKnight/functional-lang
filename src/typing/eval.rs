@@ -19,7 +19,7 @@ pub(super) trait TyEval<'i: 'a, 'a> {
 
     fn eval<'inn>(
         &self,
-        ctx: &ctx!(arena 'inn; ty_var),
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
     ) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn;
@@ -28,7 +28,10 @@ pub(super) trait TyEval<'i: 'a, 'a> {
 impl<'i: 'a, 'a, T: TyEval<'i, 'a>> TyEval<'i, 'a> for Option<T> {
     type Evaled = Option<T::Evaled>;
 
-    fn eval<'inn>(&self, ctx: &ctx!(arena 'inn; ty_var)) -> Result<Self::Evaled, TypeCheckError<'i>>
+    fn eval<'inn>(
+        &self,
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
+    ) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn,
     {
@@ -39,7 +42,10 @@ impl<'i: 'a, 'a, T: TyEval<'i, 'a>> TyEval<'i, 'a> for Option<T> {
 impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
     type Evaled = InternedType<'a>;
 
-    fn eval<'inn>(&self, ctx: &ctx!(arena 'inn; ty_var)) -> Result<Self::Evaled, TypeCheckError<'i>>
+    fn eval<'inn>(
+        &self,
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
+    ) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn,
     {
@@ -57,7 +63,13 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
                     bounds,
                     // ty_vars are not currently used so this is useless but may as well push it if
                     // only for future correctness
-                    result: result.eval(&ctx.push_ty_var(name, TyVar::Bounded(bounds)))?,
+                    result: result.eval(&ctx.push_ty_var(
+                        name,
+                        TyVar::Bounded {
+                            bounds,
+                            eff_lvl: ctx.next_eff_var_level(),
+                        },
+                    ))?,
                 }
             }
             uir::RawType::TyApp { abs, arg } => {
@@ -142,7 +154,10 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Type<'i> {
 impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::TyBounds<'i> {
     type Evaled = TyBounds<'a>;
 
-    fn eval<'inn>(&self, ctx: &ctx!(arena 'inn; ty_var)) -> Result<Self::Evaled, TypeCheckError<'i>>
+    fn eval<'inn>(
+        &self,
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
+    ) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn,
     {
@@ -181,7 +196,10 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::TyBounds<'i> {
 impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::EffectGroup<'i, uir::Effect<'i>> {
     type Evaled = EffectGroup<'a>;
 
-    fn eval<'inn>(&self, ctx: &ctx!(arena 'inn; ty_var)) -> Result<Self::Evaled, TypeCheckError<'i>>
+    fn eval<'inn>(
+        &self,
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
+    ) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn,
     {
@@ -195,7 +213,10 @@ impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::EffectGroup<'i, uir::Effect<'i>> {
 impl<'i: 'a, 'a> TyEval<'i, 'a> for uir::Effect<'i> {
     type Evaled = Effect<'a>;
 
-    fn eval<'inn>(&self, ctx: &ctx!(arena 'inn; ty_var)) -> Result<Self::Evaled, TypeCheckError<'i>>
+    fn eval<'inn>(
+        &self,
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
+    ) -> Result<Self::Evaled, TypeCheckError<'i>>
     where
         'a: 'inn,
     {

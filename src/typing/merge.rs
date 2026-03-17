@@ -3,7 +3,7 @@ use itertools::{Itertools, zip_eq};
 use crate::{
     common::{hashmap_intersection, hashmap_union, hashmap_union_with_key},
     typing::{
-        InternedType, TyConfig, TyVar,
+        EffVar, InternedType, TyConfig, TyVar,
         effects::{Effect, EffectGroup},
         error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
         subtyping::expect_type,
@@ -23,7 +23,7 @@ pub(super) trait Mergeable<'a>: Sized {
         mergee1: Self,
         mergee2: Self,
         join: bool,
-        ctx: &ctx!(arena 'inn; ty_var),
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
     ) -> Result<Self::Output, ContextError<'static>>
     where
         'a: 'inn;
@@ -31,7 +31,7 @@ pub(super) trait Mergeable<'a>: Sized {
     fn merge<'inn>(
         mergees: impl IntoIterator<Item = Self>,
         join: bool,
-        ctx: &ctx!(arena 'inn; ty_var),
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
     ) -> Result<Self::Output, ContextError<'static>>
     where
         'a: 'inn;
@@ -44,7 +44,7 @@ impl<'a> Mergeable<'a> for InternedType<'a> {
         ty1: InternedType<'a>,
         ty2: InternedType<'a>,
         join: bool,
-        ctx: &ctx!(arena 'inn; ty_var),
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
     ) -> Result<InternedType<'a>, ContextError<'static>>
     where
         'a: 'inn,
@@ -135,7 +135,13 @@ impl<'a> Mergeable<'a> for InternedType<'a> {
                         res1,
                         res2,
                         join,
-                        &ctx.push_ty_var(name, TyVar::Bounded(bounds)),
+                        &ctx.push_ty_var(
+                            name,
+                            TyVar::Bounded {
+                                bounds,
+                                eff_lvl: ctx.next_eff_var_level(),
+                            },
+                        ),
                     )?,
                 }
             }
@@ -155,6 +161,24 @@ impl<'a> Mergeable<'a> for InternedType<'a> {
                 Type::RecAbs {
                     name,
                     result: merge2(res1, res2, join, &ctx.push_ty_var(name, TyVar::Rec))?,
+                }
+            }
+            (
+                Type::EffAbs {
+                    name: name1,
+                    result: res1,
+                },
+                Type::EffAbs {
+                    name: name2,
+                    result: res2,
+                },
+            ) => {
+                // we take the minimum arbitrarily,
+                // it doesn't even have to match elsewhere but it should
+                let name = std::cmp::min(*name1, *name2);
+                Type::EffAbs {
+                    name,
+                    result: merge2(res1, res2, join, &ctx.push_eff_var(name.0, EffVar::Unbound))?,
                 }
             }
             (Type::TyVar(level1), Type::TyVar(level2)) => {
@@ -260,6 +284,7 @@ impl<'a> Mergeable<'a> for InternedType<'a> {
             (
                 Type::TyAbs { .. }
                 | Type::RecAbs { .. }
+                | Type::EffAbs { .. }
                 | Type::TyVar { .. }
                 | Type::TyObj(_)
                 | Type::Arr { .. }
@@ -334,7 +359,7 @@ impl<'a> Mergeable<'a> for InternedType<'a> {
     fn merge<'inn>(
         types: impl IntoIterator<Item = Self>,
         join: bool,
-        ctx: &ctx!(arena 'inn; ty_var),
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
     ) -> Result<Self, ContextError<'static>>
     where
         'a: 'inn,
@@ -359,7 +384,7 @@ impl<'a> Mergeable<'a> for &EffectGroup<'a> {
         e1: Self,
         e2: Self,
         join: bool,
-        ctx: &ctx!(arena 'inn; ty_var),
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
     ) -> Result<Self::Output, ContextError<'static>>
     where
         'a: 'inn,
@@ -398,7 +423,7 @@ impl<'a> Mergeable<'a> for &EffectGroup<'a> {
     fn merge<'inn>(
         effect_groups: impl IntoIterator<Item = Self>,
         join: bool,
-        ctx: &ctx!(arena 'inn; ty_var),
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
     ) -> Result<Self::Output, ContextError<'static>>
     where
         'a: 'inn,
@@ -426,7 +451,7 @@ impl<'a> Mergeable<'a> for Effect<'a> {
         e1: Self,
         e2: Self,
         join: bool,
-        ctx: &ctx!(arena 'inn; ty_var),
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
     ) -> Result<Self, ContextError<'static>>
     where
         'a: 'inn,
@@ -458,6 +483,27 @@ impl<'a> Mergeable<'a> for Effect<'a> {
                     result: InternedType::merge2(result1, result2, !join, ctx)?,
                 }
             }
+            (Effect::Var(level1), Effect::Var(level2)) => {
+                return if level1 == level2 {
+                    Ok(e1)
+                } else {
+                    Err(PlainContextError::new(format!(
+                        "cannot {op} effect variables:\n\
+                        variable 1: {}\n\
+                        variable 2: {}",
+                        e1.display(ctx)?,
+                        e2.display(ctx)?
+                    )))?
+                };
+            }
+            // not using _ to avoid catching more cases than intended
+            (Effect::Def { .. } | Effect::Var(_), _) => Err(PlainContextError::new(format!(
+                "cannot {op} incompatible effects:\n\
+                type 1: {}\n\
+                type 2: {}\n",
+                e1.display(ctx)?,
+                e2.display(ctx)?
+            )))?,
         };
 
         Ok(effect)
@@ -466,7 +512,7 @@ impl<'a> Mergeable<'a> for Effect<'a> {
     fn merge<'inn>(
         effects: impl IntoIterator<Item = Self>,
         join: bool,
-        ctx: &ctx!(arena 'inn; ty_var),
+        ctx: &ctx!(arena 'inn; ty_var; eff_var),
     ) -> Result<Self, ContextError<'static>>
     where
         'a: 'inn,
@@ -498,7 +544,7 @@ impl<'a> Mergeable<'a> for Effect<'a> {
 /// information (they can manually coerce their types to any beforehand if they so wish).
 pub(super) fn join<'a: 'inn, 'inn, T: Mergeable<'a>>(
     joinees: impl IntoIterator<Item = T>,
-    ctx: &ctx!(arena 'inn; ty_var),
+    ctx: &ctx!(arena 'inn; ty_var; eff_var),
 ) -> Result<T::Output, ContextError<'static>> {
     T::merge(joinees, true, ctx)
 }
@@ -518,7 +564,7 @@ pub(super) fn join<'a: 'inn, 'inn, T: Mergeable<'a>>(
 /// information (they can manually coerce their types to never beforehand if they so wish).
 pub(super) fn meet<'a: 'inn, 'inn, T: Mergeable<'a>>(
     meetees: impl IntoIterator<Item = T>,
-    ctx: &ctx!(arena 'inn; ty_var),
+    ctx: &ctx!(arena 'inn; ty_var; eff_var),
 ) -> Result<T::Output, ContextError<'static>> {
     T::merge(meetees, false, ctx)
 }

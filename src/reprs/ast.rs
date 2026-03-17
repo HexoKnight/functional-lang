@@ -33,6 +33,15 @@ pub enum RawTerm<'i> {
         arg: Box<Type<'i>>,
     },
 
+    EffAbs {
+        arg: Ident<'i>,
+        body: Box<Term<'i>>,
+    },
+    EffApp {
+        abs: Box<Term<'i>>,
+        effects: EffectGroup<'i, Effect<'i>>,
+    },
+
     Var(Ident<'i>),
 
     Type(Type<'i>),

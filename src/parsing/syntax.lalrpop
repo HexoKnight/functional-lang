@@ -80,10 +80,12 @@ Abs: RawTerm<'input> = {
     "\\" <arg:Assignee> <arg_type:(":" <Type>)?> <effects:EffectGroup<Effect>?> <body:Box<Term>> =>
         RawTerm::Abs { arg, arg_type, effects, body },
     "?" <arg:Ident> <bounds:TyBounds> <body:Box<Term>> => RawTerm::TyAbs { arg, bounds, body },
+    "?" "%" <arg:Ident> <body:Box<Term>> => RawTerm::EffAbs { arg, body },
 }
 
 TyApp: RawTerm<'input> = {
     <func:Box<WithInfo<TyAppLeft>>> "[" <arg:Box<Type>> "]" => RawTerm::TyApp { func, arg },
+    <abs:Box<WithInfo<TyAppLeft>>> "[" "%" <effects:EffectGroupInner<Effect>> "]" => RawTerm::EffApp { abs, effects },
 }
 App<Abs, Term>: RawTerm<'input> = {
     <func:Box<WithInfo<AppLeft>>> <effects:EffectGroup<Ident>?> <arg:Box<WithInfo<AppRight<Abs, Term>>>> =>
@@ -218,6 +220,7 @@ RawEffect: RawEffect<'input> = {
     "effect" <name:Ident> <arg:Box<WithInfo<Ty_ArrLeft>>> "->" <result:Box<Type>> => RawEffect::Def { name, arg, result },
 }
 
-EffectGroup<T>: EffectGroup<'input, T> = {
-    "%" "{" <CommaSep<(<(<Ident> ":")?> <T>)>> "}" => EffectGroup(<>),
+EffectGroupInner<T>: EffectGroup<'input, T> = {
+    <CommaSep<(<(<Ident> ":")?> <T>)>> => EffectGroup(<>),
 }
+EffectGroup<T>: EffectGroup<'input, T> = "%" "{" <EffectGroupInner<T>> "}";

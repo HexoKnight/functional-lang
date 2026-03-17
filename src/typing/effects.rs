@@ -1,10 +1,27 @@
+use std::fmt;
+
 use itertools::{Either, Itertools};
 
 use crate::{
     hashed_hashmap::HashedHashMap,
     reprs::common::{Label, Lvl},
-    typing::{InternedType, TyArenaContext},
+    typing::{EffVar, InternedType, TyArenaContext, TyEffLvl, TypeCheckError, error::IllegalError},
 };
+
+#[derive(Hash, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub enum EffId<'a> {
+    Name(Label<'a>),
+    Unbound(Lvl),
+}
+
+impl<'a> fmt::Display for EffId<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EffId::Name(label) => label.fmt(f),
+            EffId::Unbound(lvl) => write!(f, "<effvar:{lvl:?}>"),
+        }
+    }
+}
 
 /// we take effect subtyping to be akin to arrow type parameter subtyping:
 /// ie. the opposite of arrow type subtyping
@@ -17,25 +34,52 @@ pub enum Effect<'a> {
         arg: InternedType<'a>,
         result: InternedType<'a>,
     },
+    Var(Lvl),
 }
 
 impl<'a> Effect<'a> {
-    pub fn get_name(&self) -> Label<'a> {
+    pub fn get_id(&self) -> EffId<'a> {
         match self {
-            Effect::Def { name, .. } => *name,
+            Self::Def { name, .. } => EffId::Name(*name),
+            Self::Var(level) => EffId::Unbound(*level),
         }
     }
 
-    pub fn deepen(&self, prev_level: Lvl, new_level: Lvl, ctx: &impl TyArenaContext<'a>) -> Self {
-        if prev_level == new_level {
+    pub fn deepen(
+        &self,
+        prev_ty_eff_lvl: TyEffLvl,
+        new_ty_eff_lvl: TyEffLvl,
+        ctx: &impl TyArenaContext<'a>,
+    ) -> Self {
+        if prev_ty_eff_lvl == new_ty_eff_lvl {
             return *self;
         }
         match self {
-            Effect::Def { name, arg, result } => Effect::Def {
+            Self::Def { name, arg, result } => Effect::Def {
                 name: *name,
-                arg: arg.deepen(prev_level, new_level, ctx),
-                result: result.deepen(prev_level, new_level, ctx),
+                arg: arg.deepen(prev_ty_eff_lvl, new_ty_eff_lvl, ctx),
+                result: result.deepen(prev_ty_eff_lvl, new_ty_eff_lvl, ctx),
             },
+            Self::Var(level) => todo!(),
+        }
+    }
+
+    /// Resolves the effect as much as possible
+    pub fn concrete(
+        &self,
+        ctx: &ctx!(arena; ty_var; eff_var),
+    ) -> Result<Self, IllegalError<'static>> {
+        match self {
+            Effect::Var(level) => {
+                let (_, eff_var) = ctx.get_eff_var_unwrap(*level)?;
+                match eff_var {
+                    EffVar::Effect { effect, ty_lvl } => effect
+                        .deepen(TyEffLvl::new(ty_lvl, *level), ctx.next_ty_eff_level(), ctx)
+                        .concrete(ctx),
+                    EffVar::Unbound => Ok(*self),
+                }
+            }
+            Effect::Def { .. } => Ok(*self),
         }
     }
 }
@@ -43,7 +87,7 @@ impl<'a> Effect<'a> {
 #[derive(Clone, Hash, Eq, PartialEq)]
 pub struct EffectGroup<'a> {
     pub labelled: HashedHashMap<Label<'a>, Effect<'a>>,
-    pub anonymous: HashedHashMap<Label<'a>, Effect<'a>>,
+    pub anonymous: HashedHashMap<EffId<'a>, Effect<'a>>,
     /// equivalent to `Type::Unknown`
     /// should only be `false` for `check_type`
     pub exhaustive: bool,
@@ -66,7 +110,7 @@ impl<'i> FromIterator<(Option<Label<'i>>, Effect<'i>)> for EffectGroup<'i> {
             if let Some(name) = name {
                 Either::Left((name, effect))
             } else {
-                Either::Right((effect.get_name(), effect))
+                Either::Right((effect.get_id(), effect))
             }
         });
 
@@ -103,7 +147,7 @@ impl<'a> EffectGroup<'a> {
             anonymous: self
                 .anonymous
                 .iter_unsorted()
-                .map(|(_, e)| f(None, e).map(|e| (e.get_name(), e)))
+                .map(|(_, e)| f(None, e).map(|e| (e.get_id(), e)))
                 .try_collect()?,
             ..*self
         })
@@ -126,7 +170,7 @@ impl<'a> EffectGroup<'a> {
         self.labelled.0.get(&label)
     }
 
-    pub fn get_anonymous(&self, name: Label<'a>) -> Option<&Effect<'a>> {
+    pub fn get_anonymous(&self, name: EffId<'a>) -> Option<&Effect<'a>> {
         self.anonymous.0.get(&name)
     }
 }

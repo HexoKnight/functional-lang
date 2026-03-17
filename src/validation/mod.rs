@@ -347,6 +347,14 @@ impl<'i> Validate<'i> for ast::Term<'i> {
                 abs: func.validate(ctx)?,
                 arg: arg.validate(ctx)?,
             },
+            ast::RawTerm::EffAbs { arg, body } => ir::RawTerm::EffAbs {
+                name: Label(arg.0.text()),
+                body: body.validate(&ctx.push_eff_vars(once(arg.0.text())))?,
+            },
+            ast::RawTerm::EffApp { abs, effects } => ir::RawTerm::EffApp {
+                abs: abs.validate(ctx)?,
+                effects: effects.validate(ctx)?,
+            },
             ast::RawTerm::Var(ident) => {
                 let Some(index) = ctx.find_var(ident.0.text()) else {
                     return Err(ValidationError::VarNotFound {

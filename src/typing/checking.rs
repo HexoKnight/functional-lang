@@ -16,7 +16,7 @@ use crate::{
         untyped_ir as uir,
     },
     typing::{
-        EffVar, InternedType, TyConfig, TyVar,
+        InternedType, TyConfig, TyVar,
         context::{ContextInner, EffVarContext, TyArenaContext, TyVarContext},
         effects::{Effect, EffectGroup},
         error::{IllegalError, SpannedError, TypeCheckError, TypeCheckResult},
@@ -36,8 +36,9 @@ mod context {
         importing::ImportId,
         reprs::common::{Idx, Label, Lvl},
         typing::{
-            EffVar, InternedType, TyVar,
+            EffVar, InternedType, MapVars, TyEffLvl, TyVar,
             context::{ContextInner, EffVarContext, Stack, TyArenaContext, TyVarContext},
+            effects::Effect,
             ty::Type,
         },
     };
@@ -47,9 +48,10 @@ mod context {
     pub(super) struct Context<'a, 'inn> {
         inner: &'inn ContextInner<'a>,
         import_tys: &'inn HashMap<ImportId, InternedType<'a>>,
-        var_ty_stack: Stack<(InternedType<'a>, Lvl)>,
+        var_ty_stack: Stack<(InternedType<'a>, TyEffLvl)>,
         ty_var_stack: Stack<(&'a str, TyVar<'a>)>,
-        eff_var_stack: Stack<(Label<'a>, EffVar<'a>)>,
+        eff_ref_stack: Stack<(Label<'a>, Effect<'a>, TyEffLvl)>,
+        eff_var_stack: Stack<(&'a str, EffVar<'a>)>,
     }
 
     impl<'a, 'inn> Context<'a, 'inn> {
@@ -62,6 +64,7 @@ mod context {
                 import_tys,
                 var_ty_stack: Vec::new(),
                 ty_var_stack: Vec::new(),
+                eff_ref_stack: Vec::new(),
                 eff_var_stack: Vec::new(),
             }
         }
@@ -72,25 +75,28 @@ mod context {
         ) -> Self {
             let mut new = self.clone();
 
-            let ty_var_level = self.next_ty_var_level();
+            let ty_eff_lvl = self.next_ty_eff_level();
 
             new.var_ty_stack
-                .extend(vars.into_iter().map(|var_ty| (var_ty, ty_var_level)));
+                .extend(vars.into_iter().map(|var_ty| (var_ty, ty_eff_lvl)));
             new
         }
 
         pub(super) fn get_var_ty(&self, index: Idx) -> Option<InternedType<'a>> {
-            let (var_ty, ty_var_level) = *index.get(&self.var_ty_stack)?;
-            let current_ty_var_level = self.next_ty_var_level();
-            if ty_var_level == current_ty_var_level {
+            let (var_ty, ty_eff_lvl) = *index.get(&self.var_ty_stack)?;
+
+            let cur_ty_eff_lvl = self.next_ty_eff_level();
+
+            if ty_eff_lvl == cur_ty_eff_lvl {
                 return Some(var_ty);
             }
-            debug_assert!(current_ty_var_level.deeper_than(ty_var_level));
+            debug_assert!(cur_ty_eff_lvl.ty.deeper_than(ty_eff_lvl.ty));
+            debug_assert!(cur_ty_eff_lvl.eff.deeper_than(ty_eff_lvl.eff));
 
-            Some(var_ty.map_ty_vars_no_level(
+            Some(var_ty.map_vars_no_level(
                 |level| {
-                    let level = if level.deeper_than(ty_var_level) {
-                        level.translate(ty_var_level, current_ty_var_level).expect(
+                    let level = if level.deeper_than(ty_eff_lvl.ty) {
+                        level.translate(ty_eff_lvl.ty, cur_ty_eff_lvl.ty).expect(
                             "current ty_var_stack cannot be smaller than \
                             the ty_var_stack of a currently bound variable",
                         )
@@ -98,6 +104,17 @@ mod context {
                         level
                     };
                     self.intern(Type::TyVar(level))
+                },
+                |level| {
+                    let level = if level.deeper_than(ty_eff_lvl.eff) {
+                        level.translate(ty_eff_lvl.eff, cur_ty_eff_lvl.eff).expect(
+                            "current eff_var_stack cannot be smaller than \
+                            the eff_var_stack of a currently bound variable",
+                        )
+                    } else {
+                        level
+                    };
+                    Effect::Var(level)
                 },
                 self,
             ))
@@ -116,17 +133,35 @@ mod context {
             new
         }
 
-        pub(super) fn push_eff_vars(
+        pub(super) fn next_eff_ref_level(&self) -> Lvl {
+            Lvl::get_depth(&self.eff_ref_stack)
+        }
+
+        pub(super) fn push_eff_refs(
             &self,
-            eff_vars: impl IntoIterator<Item = (Label<'a>, <Self as EffVarContext<'a>>::EffVar)>,
+            eff_vars: impl IntoIterator<Item = (Label<'a>, Effect<'a>, TyEffLvl)>,
         ) -> Self {
             let mut new = self.clone();
-            new.eff_var_stack.extend(eff_vars);
+            new.eff_ref_stack.extend(eff_vars);
             new
         }
 
-        pub(super) fn find_eff_var(&self, label: Label<'a>) -> Option<Lvl> {
-            Lvl::find(&self.eff_var_stack, |(var_label, _)| *var_label == label)
+        pub(super) fn find_eff_ref(&self, label: Label<'a>) -> Option<Lvl> {
+            Lvl::find(&self.eff_ref_stack, |(var_label, _, _)| *var_label == label)
+        }
+
+        pub(super) fn get_eff_ref(&self, level: Lvl) -> Option<(Label<'a>, Effect<'a>)> {
+            let (label, effect, ty_eff_lvl) = *level.get(&self.eff_ref_stack)?;
+
+            let cur_ty_eff_lvl = self.next_ty_eff_level();
+
+            if ty_eff_lvl == cur_ty_eff_lvl {
+                return Some((label, effect));
+            }
+            debug_assert!(cur_ty_eff_lvl.ty.deeper_than(ty_eff_lvl.ty));
+            debug_assert!(cur_ty_eff_lvl.eff.deeper_than(ty_eff_lvl.eff));
+
+            Some((label, effect.deepen(ty_eff_lvl, cur_ty_eff_lvl, self)))
         }
     }
 
@@ -163,18 +198,22 @@ mod context {
     impl<'a> EffVarContext<'a> for Context<'a, '_> {
         type EffVar = EffVar<'a>;
 
-        fn push_eff_var(&self, eff_var_name: Label<'a>, eff_var: Self::EffVar) -> Self {
+        fn push_eff_var(&self, eff_var_name: &'a str, eff_var: Self::EffVar) -> Self {
             let mut new = self.clone();
             new.eff_var_stack.push((eff_var_name, eff_var));
             new
+        }
+
+        fn get_eff_var(&self, level: Lvl) -> Option<(&'a str, Self::EffVar)> {
+            level.get(&self.eff_var_stack).copied()
         }
 
         fn next_eff_var_level(&self) -> Lvl {
             Lvl::get_depth(&self.eff_var_stack)
         }
 
-        fn get_eff_var(&self, level: Lvl) -> Option<(Label<'a>, Self::EffVar)> {
-            level.get(&self.eff_var_stack).copied()
+        fn get_eff_vars(&self) -> impl Iterator<Item = (&'a str, Self::EffVar)> {
+            self.eff_var_stack.iter().copied()
         }
     }
 }
@@ -349,14 +388,23 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     let (arg_structure, arg_types, ty_vars) =
                         arg.destructure(arg_structure, ctx)?;
 
-                    let ctx_ =
-                        ctx.push_var_tys(arg_types.into_iter().map(|(_, ty)| ty))
-                            .push_ty_vars(ty_vars.iter().map(|(name, ty)| (*name, TyVar::Type(ty))))
-                            .push_eff_vars(
-                                declared_effects.labelled.iter_unsorted().map(|(l, e)| {
-                                    (*l, EffVar::Effect(*e, ctx.next_ty_var_level()))
-                                }),
-                            );
+                    let ctx_ = ctx
+                        .push_var_tys(arg_types.into_iter().map(|(_, ty)| ty))
+                        .push_ty_vars(ty_vars.iter().map(|(name, ty)| {
+                            (
+                                *name,
+                                TyVar::Type {
+                                    ty,
+                                    eff_lvl: ctx.next_eff_var_level(),
+                                },
+                            )
+                        }))
+                        .push_eff_refs(
+                            declared_effects
+                                .labelled
+                                .iter_unsorted()
+                                .map(|(l, e)| (*l, *e, ctx.next_ty_eff_level())),
+                        );
                     let (body, result, effects_used) = body.type_check(
                         check_result,
                         ty_config.infer_ty_args(true).ty_infer_fail(false),
@@ -364,7 +412,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     )?;
 
                     let result = result.substitute_ty_vars(
-                        ctx.next_ty_var_level(),
+                        ctx.next_ty_eff_level(),
                         &ty_vars.into_iter().map(|(_, ty)| ty).collect::<Box<_>>(),
                         ctx,
                     );
@@ -418,19 +466,28 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     let (arg_structure, check_args, ty_vars) =
                         check_arg.destructure(arg_structure, ctx)?;
 
-                    let ctx_ =
-                        ctx.push_var_tys(check_args.into_iter().map(|(_, ty)| ty))
-                            .push_ty_vars(ty_vars.iter().map(|(name, ty)| (*name, TyVar::Type(ty))))
-                            .push_eff_vars(
-                                declared_effects.labelled.iter_unsorted().map(|(l, e)| {
-                                    (*l, EffVar::Effect(*e, ctx.next_ty_var_level()))
-                                }),
-                            );
+                    let ctx_ = ctx
+                        .push_var_tys(check_args.into_iter().map(|(_, ty)| ty))
+                        .push_ty_vars(ty_vars.iter().map(|(name, ty)| {
+                            (
+                                *name,
+                                TyVar::Type {
+                                    ty,
+                                    eff_lvl: ctx.next_eff_var_level(),
+                                },
+                            )
+                        }))
+                        .push_eff_refs(
+                            declared_effects
+                                .labelled
+                                .iter_unsorted()
+                                .map(|(l, e)| (*l, *e, ctx.next_ty_eff_level())),
+                        );
                     let (body, result, effects_used) =
                         body.type_check(check_result, ty_config.infer_ty_args(true), &ctx_)?;
 
                     let result = result.substitute_ty_vars(
-                        ctx.next_ty_var_level(),
+                        ctx.next_ty_eff_level(),
                         &ty_vars.into_iter().map(|(_, ty)| ty).collect::<Box<_>>(),
                         ctx,
                     );
@@ -471,54 +528,61 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
             } => {
                 let check_type = check_type.take();
 
-                let provided_effects = app_effects
+                let app_effects = app_effects
                     .0
                     .iter()
                     .map(|(label, level)| {
-                        ctx.get_eff_var_unwrap(*level).map(|(_, e)| {
-                            (
-                                *label,
-                                match e {
-                                    EffVar::Effect(effect, level) => {
-                                        effect.deepen(level, ctx.next_ty_var_level(), ctx)
-                                    }
-                                },
-                            )
-                        })
+                        ctx.get_eff_ref(*level)
+                            .map(|(outer_label, effect)| (*label, *level, outer_label, effect))
+                            .ok_or_else(|| {
+                                IllegalError::new(
+                                    format!("effect reference level not found: {level:?}"),
+                                    None,
+                                )
+                            })
                     })
-                    .collect::<Result<EffectGroup, _>>()?
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let provided_effects = app_effects
+                    .iter()
+                    .map(|(label, _, _, effect)| (*label, *effect))
+                    .collect::<EffectGroup>()
                     .non_exhaustive();
 
                 let check_func_effects = |func_effects: &EffectGroup<'a>| {
                     let mut provided_labelled = HashMap::<_, _>::new();
                     let mut provided_anonymous = HashMap::<_, _>::new();
 
-                    app_effects.0.iter().try_for_each(|(label, level)| {
-                        if let Some(label) = label {
-                            let prev = provided_labelled.insert(*label, *level);
-                            #[cfg(debug_assertions)]
-                            if prev.is_some() {
-                                Err(IllegalError::new(
-                                    "effect label appears twice (validation failure)",
-                                    Some(*info),
-                                ))?
+                    app_effects
+                        .iter()
+                        .try_for_each(|(label, level, outer_label, effect)| {
+                            if let Some(label) = label {
+                                let prev = provided_labelled.insert(*label, *level);
+                                #[cfg(debug_assertions)]
+                                if prev.is_some() {
+                                    Err(IllegalError::new(
+                                        "effect label appears twice (validation failure)",
+                                        Some(*info),
+                                    ))?
+                                }
+                            } else {
+                                let name = effect.get_id();
+                                if let Some((prev_label, _)) =
+                                    provided_anonymous.insert(name, (*outer_label, *level))
+                                {
+                                    Err(SpannedError::new(
+                                        "anonymous effect kind specified multiple times",
+                                        format!(
+                                            "'{name}' effects: '{}' vs '{}'",
+                                            prev_label, outer_label
+                                        ),
+                                        "in this application",
+                                        *info,
+                                    ))?
+                                }
                             }
-                        } else {
-                            let (label, eff_var) = ctx.get_eff_var_unwrap(*level)?;
-                            let name = eff_var.get_name();
-                            if let Some((prev_label, _)) =
-                                provided_anonymous.insert(name, (label, *level))
-                            {
-                                Err(SpannedError::new(
-                                    "anonymous effect kind specified multiple times",
-                                    format!("'{name}' effects: '{}' vs '{}'", prev_label, label),
-                                    "in this application",
-                                    *info,
-                                ))?
-                            }
-                        }
-                        Ok::<_, TypeCheckError>(())
-                    })?;
+                            Ok::<_, TypeCheckError>(())
+                        })?;
 
                     let (labelled, anonymous) =
                         func_effects
@@ -527,7 +591,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                                 Ok::<_, TypeCheckError>(if let Some(label) = label {
                                     if let Some(level) = provided_labelled
                                         .remove(&label)
-                                        .or_else(|| ctx.find_eff_var(label))
+                                        .or_else(|| ctx.find_eff_ref(label))
                                     {
                                         Either::Left((level, *info))
                                     } else {
@@ -542,7 +606,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                                         ))?
                                     }
                                 } else if let Some((_, level)) =
-                                    provided_anonymous.remove(&effect.get_name())
+                                    provided_anonymous.remove(&effect.get_id())
                                 {
                                     Either::Left((level, *info))
                                 } else {
@@ -800,7 +864,13 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     (None, None)
                 };
 
-                let ctx_ = ctx.push_ty_var(name, TyVar::Bounded(bounds));
+                let ctx_ = ctx.push_ty_var(
+                    name,
+                    TyVar::Bounded {
+                        bounds,
+                        eff_lvl: ctx.next_eff_var_level(),
+                    },
+                );
                 let (body, result, effects_used) =
                     body.type_check(check_result, ty_config, &ctx_)?;
 
@@ -863,6 +933,14 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                 let ty = abs.apply_ty_arg(abs_info, arg, arg_term.0, ty_config, ctx)?;
                 (abs_term, ty, abs_effects_used)
             }
+            uir::RawTerm::EffAbs { name, body } => {
+                //
+                todo!()
+            }
+            uir::RawTerm::EffApp { abs, effects } => {
+                //
+                todo!()
+            }
             uir::RawTerm::Var(index) => {
                 let ty = ctx.get_var_ty(*index).ok_or_else(|| {
                     IllegalError::new(format!("variable index not found: {index:?}"), Some(*info))
@@ -892,10 +970,10 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                 ctx.intern(todo!()),
                 EffectUses::default(),
             ),
-            uir::RawTerm::Trigger(effect) => {
-                let effect = effect.eval(ctx)?;
+            uir::RawTerm::Trigger(effect_term) => {
+                let effect = effect_term.eval(ctx)?;
 
-                let (term, ty) = match effect {
+                let (term, ty) = match effect.concrete(ctx)? {
                     Effect::Def { name, arg, result } => (
                         tir::RawTerm::Trigger {
                             // TODO
@@ -907,6 +985,12 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                             result,
                         },
                     ),
+                    Effect::Var(level) => Err(IllegalError::new(
+                        format!(
+                            "`Effect::concrete` produced non-concrete effect: var of level {level:?}"
+                        ),
+                        Some(effect_term.0),
+                    ))?,
                 };
 
                 (term, ctx.intern(ty), EffectUses::default())
@@ -978,7 +1062,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     };
 
                     let unfolded_rec =
-                        rec_body.substitute_ty_var(ctx.next_ty_var_level(), rec, ctx);
+                        rec_body.substitute_ty_var(ctx.next_ty_eff_level(), rec, ctx);
                     let arg = if let Some(check_arg) = check_arg {
                         expect_type(
                             check_arg,
@@ -1068,7 +1152,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     };
 
                     let unfolded_rec =
-                        rec_body.substitute_ty_var(ctx.next_ty_var_level(), rec, ctx);
+                        rec_body.substitute_ty_var(ctx.next_ty_eff_level(), rec, ctx);
                     let result = if let Some(check_result) = check_result {
                         expect_type(
                             check_result,
@@ -1550,7 +1634,7 @@ fn check_declared_effects<'i: 'a, 'a>(
         for (label, declared_effect) in declared_effects.iter_unsorted() {
             let Some(check_effect) = label
                 .and_then(|label| check_effects.get_labelled(label))
-                .or_else(|| check_effects.get_anonymous(declared_effect.get_name()))
+                .or_else(|| check_effects.get_anonymous(declared_effect.get_id()))
             else {
                 if check_effects.exhaustive {
                     Err(SpannedError::new(
@@ -1581,13 +1665,15 @@ fn check_declared_effects<'i: 'a, 'a>(
         .labelled
         .into_iter()
         // only effects not bound by this abstraction
-        .filter(|(level, _)| !level.deeper_than(ctx.next_eff_var_level()))
+        .filter(|(level, _)| !level.deeper_than(ctx.next_eff_ref_level()))
         // preferably we could find a way to not discard this span here
         .map(|(level, span)| {
-            let (label, eff_var) = ctx.get_eff_var_unwrap(level)?;
-            let effect = match eff_var {
-                EffVar::Effect(effect, level) => effect.deepen(level, ctx.next_ty_var_level(), ctx),
-            };
+            let (label, effect) = ctx.get_eff_ref(level).ok_or_else(|| {
+                IllegalError::new(
+                    format!("effect reference level not found: {level:?}"),
+                    Some(span),
+                )
+            })?;
             if let Some(check_effects) = check_effects
                 && let Some(check_effect) = check_effects.get_labelled(label)
             {
@@ -1609,7 +1695,7 @@ fn check_declared_effects<'i: 'a, 'a>(
     let mut anonymous_effects: HashedHashMap<_, _> = effects_used
         .anonymous
         .into_iter()
-        .into_group_map_by(|(e, _)| e.get_name())
+        .into_group_map_by(|(e, _)| e.get_id())
         .into_iter()
         .map(|(name, anonymous_effects)| {
             let check_catching_effect = |catching_effect| {
@@ -1648,7 +1734,7 @@ fn check_declared_effects<'i: 'a, 'a>(
                 // any previous (maybe ambiguous) labelled effect
                 let all_fallback_effects = labelled_effects
                     .iter_unsorted()
-                    .filter(|(_, e)| e.get_name() == name)
+                    .filter(|(_, e): &(_, &Effect)| e.get_id() == name)
                     .unique_by(|(l, _)| *l)
                     .collect_vec();
                 match all_fallback_effects[..] {
@@ -1681,7 +1767,7 @@ fn check_declared_effects<'i: 'a, 'a>(
                     let possible_effects: String = check_effects
                         .labelled
                         .iter_unsorted()
-                        .filter(|(_, e)| e.get_name() == name)
+                        .filter(|(_, e)| e.get_id() == name)
                         .unique_by(|(l, _)| *l)
                         .map(|(l, e)| e.display(ctx).map(|e| format!("\n  '{l}': {e}")))
                         .try_collect()?;
