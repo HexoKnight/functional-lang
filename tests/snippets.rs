@@ -508,6 +508,14 @@ fn ty_app() {
     evaluate_check_type(r"(?T ?R >T \r:R r)[!][bool] true", "bool");
 
     evaluate_check_type(r"?A<([B] B) \a:A a[()]", "[A <[B] B] A -> ()");
+
+    evaluate_check_type(
+        r"\f: [A] [B] A -> B
+            (f [()]) .\x: [B] () -> B
+            ()
+        ",
+        "([A] [B] A -> B) -> ()",
+    );
 }
 
 #[test]

@@ -21,6 +21,7 @@ use crate::{
         effects::{Effect, EffectGroup},
         error::{IllegalError, SpannedError, TypeCheckError, TypeCheckResult},
         eval::TyEval,
+        map_vars::MapVars,
         merge::join,
         subtyping::expect_type,
         ty::{CONCRETE_TY_APP_NAME, TyBounds, TyDisplay, Type},
@@ -894,7 +895,11 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         upper: Some(arg),
                         lower: Some(arg),
                     },
-                    result: check_type.unwrap_or(ctx.ty_unknown()),
+                    result: check_type.unwrap_or(ctx.ty_unknown()).deepen(
+                        ctx.next_ty_eff_level(),
+                        ctx.next_ty_eff_level().map_ty(Lvl::deeper),
+                        ctx,
+                    ),
                 });
 
                 let (abs_term, abs, abs_effects_used) =
