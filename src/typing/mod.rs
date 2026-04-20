@@ -268,10 +268,19 @@ fn ty_eq<'a>(ty1: InternedType<'a>, ty2: InternedType<'a>) -> bool {
 }
 
 impl<'a> Type<'a> {
-    fn arr(arg: &'a Self, result: &'a Self) -> Self {
+    // an arrow type with possibly unknown arg and result and unknown effects
+    fn arr(arg: Option<&'a Self>, result: Option<&'a Self>) -> Self {
+        Self::Arr {
+            arg: arg.unwrap_or(&Type::Unknown),
+            effects: EffectGroup::new_non_exhaustive(),
+            result: result.unwrap_or(&Type::Unknown),
+        }
+    }
+    // an arrow type with no effects
+    fn pure_arr(arg: &'a Self, result: &'a Self) -> Self {
         Self::Arr {
             arg,
-            effects: EffectGroup::new_non_exhaustive(),
+            effects: EffectGroup::default(),
             result,
         }
     }
@@ -688,11 +697,24 @@ impl<'a> Type<'a> {
                                             ctx,
                                         ),
                                     },
-                                    Effect::Var(lvl, _) => {
-                                        if *lvl == prev_ty_eff_lvl.eff {
+                                    Effect::Var(eff_level, eff_kind) => {
+                                        if *eff_level == prev_ty_eff_lvl.eff {
                                             return None;
                                         } else {
-                                            *effect
+                                            let new_level = match eff_level.shallower() {
+                                                // deeper than replaced but not equal (due to prev arm)
+                                                Some(shallower)
+                                                    if eff_level
+                                                        .deeper_than(prev_ty_eff_lvl.ty) =>
+                                                {
+                                                    shallower
+                                                }
+                                                // either:
+                                                // - shallowest so could not be strictly deeper
+                                                // - not deeper
+                                                None | Some(_) => *eff_level,
+                                            };
+                                            Effect::Var(new_level, *eff_kind)
                                         }
                                     }
                                 };

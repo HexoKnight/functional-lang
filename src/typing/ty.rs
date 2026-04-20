@@ -7,7 +7,7 @@ use crate::{
     reprs::common::{Label, Lvl},
     typing::{
         context::{EffVarContext, TyArenaContext, TyEffVarStack, TyVarContext},
-        effects::{Effect, EffectGroup},
+        effects::{EffId, Effect, EffectGroup},
         error::IllegalError,
     },
 };
@@ -99,7 +99,7 @@ pub trait TyDisplay<'ctx> {
         Ok(string)
     }
 
-    fn is_empty(&self, ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>>;
+    fn display_empty(&self, ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>>;
 }
 
 impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
@@ -117,7 +117,7 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
             } => {
                 w.push('[');
                 w.push_str(name);
-                if !bounds.is_empty(ctx)? {
+                if !bounds.display_empty(ctx)? {
                     w.push(' ');
                     bounds.write_display(ctx, w)?;
                 }
@@ -150,7 +150,11 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
             } => {
                 if matches!(
                     arg,
-                    Type::TyAbs { .. } | Type::RecAbs { .. } | Type::TyObj(_) | Type::Arr { .. }
+                    Type::TyAbs { .. }
+                        | Type::RecAbs { .. }
+                        | Type::EffAbs { .. }
+                        | Type::TyObj(_)
+                        | Type::Arr { .. }
                 ) {
                     w.push('(');
                     arg.write_display(ctx, w)?;
@@ -160,7 +164,7 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
                     w.push_str(" -> ");
                 }
 
-                if !effects.is_empty() {
+                if !effects.display_empty(ctx)? {
                     effects.write_display(ctx, w)?;
                     w.push(' ');
                 }
@@ -223,7 +227,7 @@ impl<'ctx> TyDisplay<'ctx> for Type<'ctx> {
         Ok(())
     }
 
-    fn is_empty(&self, _ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>> {
+    fn display_empty(&self, _ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>> {
         Ok(false)
     }
 }
@@ -250,7 +254,7 @@ impl<'ctx> TyDisplay<'ctx> for TyBounds<'ctx> {
         Ok(())
     }
 
-    fn is_empty(&self, _ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>> {
+    fn display_empty(&self, _ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>> {
         let Self { upper, lower } = self;
 
         Ok(upper.is_none() && lower.is_none())
@@ -280,7 +284,7 @@ impl<'ctx> TyDisplay<'ctx> for Effect<'ctx> {
         Ok(())
     }
 
-    fn is_empty(&self, _ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>> {
+    fn display_empty(&self, _ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>> {
         Ok(false)
     }
 }
@@ -310,7 +314,28 @@ impl<'ctx> TyDisplay<'ctx> for EffectGroup<'ctx> {
         Ok(())
     }
 
-    fn is_empty(&self, _ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>> {
+    fn display_empty(&self, _ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>> {
+        Ok(self.is_empty() && self.exhaustive)
+    }
+}
+
+impl<'ctx> TyDisplay<'ctx> for EffId<'ctx> {
+    #[track_caller]
+    fn write_display(
+        &self,
+        ctx: &VarStack<'ctx>,
+        w: &mut String,
+    ) -> Result<(), IllegalError<'static>> {
+        match self {
+            EffId::Name(label) => w.push_str(label.0),
+            EffId::Unbound(level) => {
+                w.push_str(ctx.get_eff_var_unwrap(*level)?.0);
+            }
+        }
+        Ok(())
+    }
+
+    fn display_empty(&self, _ctx: &VarStack<'ctx>) -> Result<bool, IllegalError<'static>> {
         Ok(false)
     }
 }

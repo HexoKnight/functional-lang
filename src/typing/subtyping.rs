@@ -7,7 +7,7 @@ use crate::{
     typing::{
         EffVar, InternedType, MapVars, TyConfig, TyEffLvl, TyVar, Variance,
         context::{MultiContext, TyArenaContext},
-        effects::{Effect, EffectGroup},
+        effects::{EffId, Effect, EffectGroup},
         error::{ContextError, IllegalError, PlainContextError, TypeCheckResult},
         subtyping::inference::InferenceEffVar,
         ty::{CONCRETE_TY_APP_NAME, TyBounds, TyDisplay, Type},
@@ -104,16 +104,20 @@ mod context {
             self.found_stack.push((name, found));
         }
 
-        pub(super) fn map_expected_level(&self, level: Lvl) -> Result<Lvl, IllegalError<'static>> {
-            if let Some(deeper) = level.get_deeper_than(Lvl::get_depth(&self.expected_stack)) {
+        // map expected level -> found level
+        pub(super) fn map_expected_level(
+            &self,
+            exp_level: Lvl,
+        ) -> Result<Lvl, IllegalError<'static>> {
+            if let Some(deeper) = exp_level.get_deeper_than(Lvl::get_depth(&self.expected_stack)) {
                 // bound after current context so we just move up
                 Ok(Lvl::get_depth(&self.found_stack).deeper_by(deeper))
-            } else if level.deeper_than(self.original_stack_depth) {
+            } else if exp_level.deeper_than(self.original_stack_depth) {
                 // bound after the original stack so we can use unbound_map to translate
-                self.unbound_map.get(&level).copied().ok_or_else(|| {
+                self.unbound_map.get(&exp_level).copied().ok_or_else(|| {
                     IllegalError::new(
                         format!(
-                            "subtype-captured {} level not found: {level:?}",
+                            "subtype-captured {} level not found: {exp_level:?}",
                             T::KIND_NAME
                         ),
                         None,
@@ -121,7 +125,7 @@ mod context {
                 })
             } else {
                 // bound in the original stack so no translation necessary
-                Ok(level)
+                Ok(exp_level)
             }
         }
 
@@ -852,8 +856,10 @@ mod inference {
                     )
                 })?;
 
-                let current_upper = &self.0.borrow().upper;
-                let new_upper = meet([&upper, current_upper], &merge_ctx)?;
+                let new_upper = {
+                    let current_upper = &self.0.borrow().upper;
+                    meet([&upper, current_upper], &merge_ctx)?
+                };
                 self.0.borrow_mut().upper = new_upper;
             } else {
                 let lower = expected_effects.try_map(|_, effect| {
@@ -865,8 +871,10 @@ mod inference {
                     )
                 })?;
 
-                let current_lower = &self.0.borrow().lower;
-                let new_lower = join([&lower, current_lower], &merge_ctx)?;
+                let new_lower = {
+                    let current_lower = &self.0.borrow().lower;
+                    join([&lower, current_lower], &merge_ctx)?
+                };
                 self.0.borrow_mut().lower = new_lower;
             }
 
@@ -1283,7 +1291,7 @@ fn expect_type_rec<'a>(
         })
         .try_wrap_error(|| {
             Ok(PlainContextError::new(format!(
-                "assuming {name_expected} == {name_found}"
+                "taking {name_expected} == {name_found}"
             )))
         }),
         (
@@ -1793,7 +1801,11 @@ impl<'a> EffectGroup<'a> {
                         .map(|(_, effect)| {
                             if let Effect::Var(level, _) = effect
                                 && let (name, InferenceEffVar::Inferred(eff_constraint)) =
-                                    ctx.eff_vars.get_expected_unwrap(*level)?
+                                    if swapped {
+                                        ctx.eff_vars.get_found_unwrap(*level)?
+                                    } else {
+                                        ctx.eff_vars.get_expected_unwrap(*level)?
+                                    }
                             {
                                 Ok::<_, IllegalError>(Some((
                                     level,
@@ -1883,10 +1895,24 @@ impl<'a> EffectGroup<'a> {
                         Ok(effect)
                     } else if let Some(effect) = try_infer_effect_sub()? {
                         Ok(effect)
+                    } else if let eff_id @ EffId::Unbound(_) = effect_sub.get_id() {
+                        Err(PlainContextError::new(format!(
+                            "anonymous '{}' effect missing from supertype\n\
+                            unfortunately, effect inference is not able to handle this situation",
+                            eff_id.display(if swapped {
+                                ctx.exp_ctx()
+                            } else {
+                                ctx.fnd_ctx()
+                            })?
+                        )))?
                     } else {
                         Err(PlainContextError::new(format!(
                             "anonymous '{}' effect missing from supertype",
-                            effect_sub.get_id()
+                            effect_sub.get_id().display(if swapped {
+                                ctx.exp_ctx()
+                            } else {
+                                ctx.fnd_ctx()
+                            })?
                         )))?
                     }
                 } else {

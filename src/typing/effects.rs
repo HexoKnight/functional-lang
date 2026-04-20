@@ -1,5 +1,3 @@
-use std::fmt;
-
 use itertools::{Either, Itertools};
 
 use crate::{
@@ -39,15 +37,6 @@ impl<'a> EffId<'a> {
         match self {
             EffId::Name(name) => EffKind::Named(name),
             EffId::Unbound(_) => EffKind::Unbound,
-        }
-    }
-}
-
-impl<'a> fmt::Display for EffId<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            EffId::Name(label) => label.fmt(f),
-            EffId::Unbound(lvl) => write!(f, "<effvar:{lvl:?}>"),
         }
     }
 }

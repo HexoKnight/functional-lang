@@ -18,7 +18,7 @@ use crate::{
     typing::{
         EffVar, InternedType, TyConfig, TyVar,
         context::{ContextInner, EffVarContext, TyArenaContext, TyVarContext},
-        effects::{Effect, EffectGroup},
+        effects::{EffKind, Effect, EffectGroup},
         error::{IllegalError, SpannedError, TypeCheckError, TypeCheckResult},
         eval::TyEval,
         map_vars::MapVars,
@@ -350,8 +350,8 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         expect_type(check_arg, arg, false, ty_config.infer_ty_args(false), ctx)
                             .try_wrap_error(|| {
                                 Ok(SpannedError::ty_ty_mismatch(
-                                    Type::arr(check_arg, &Type::Unknown).display(ctx)?,
-                                    Type::arr(arg, &Type::Unknown).display(ctx)?,
+                                    Type::arr(Some(check_arg), None).display(ctx)?,
+                                    Type::arr(Some(arg), None).display(ctx)?,
                                     *info,
                                 ))
                             })?;
@@ -545,8 +545,10 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                                     Err(SpannedError::new(
                                         "anonymous effect kind specified multiple times",
                                         format!(
-                                            "'{name}' effects: '{}' vs '{}'",
-                                            prev_label, outer_label
+                                            "'{}' effects: '{}' vs '{}'",
+                                            name.display(ctx)?,
+                                            prev_label,
+                                            outer_label
                                         ),
                                         "in this application",
                                         *info,
@@ -686,7 +688,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                                 ])?,
                             )
                         }
-                        ty_abs @ Type::TyAbs { .. } => {
+                        abs @ (Type::TyAbs { .. } | Type::EffAbs { .. }) => {
                             // TODO: maybe try pass some check info into this
                             let (arg_term, arg, arg_effects_used) =
                                 arg_term.type_check(None, ty_config.infer_ty_args(false), ctx)?;
@@ -698,7 +700,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                             });
                             let inferred_func = expect_type(
                                 check_func,
-                                ty_abs,
+                                abs,
                                 true,
                                 ty_config.infer_ty_args(true),
                                 ctx,
@@ -706,7 +708,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                             .try_wrap_error(|| {
                                 Ok(SpannedError::ty_ty_mismatch(
                                     check_func.display(ctx)?,
-                                    ty_abs.display(ctx)?,
+                                    abs.display(ctx)?,
                                     *info,
                                 ))
                             })?;
@@ -736,8 +738,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                             )
                         }
                         _ => Err(SpannedError::ty_ty_mismatch(
-                            Type::arr(&Type::Unknown, check_type.unwrap_or(&Type::Unknown))
-                                .display(ctx)?,
+                            Type::arr(None, check_type).display(ctx)?,
                             func.display(ctx)?,
                             *info,
                         ))?,
@@ -912,7 +913,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
             uir::RawTerm::EffAbs { name, body } => {
                 let (check_result, infer) = if let Some(check_type) = take_concrete_check_type()? {
                     if let Type::EffAbs {
-                        name: check_name,
+                        name: _,
                         result: check_result,
                     } = check_type
                     {
@@ -978,9 +979,27 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     (body, eff_abs, effects_used)
                 }
             }
-            uir::RawTerm::EffApp { abs, effects } => {
-                //
-                todo!()
+            uir::RawTerm::EffApp {
+                abs: abs_term,
+                effects,
+            } => {
+                let effects = effects.eval(ctx)?;
+
+                let check_abs = ctx.intern(Type::EffAbs {
+                    name: Label(CONCRETE_TY_APP_NAME),
+                    result: check_type.unwrap_or(ctx.ty_unknown()).deepen(
+                        ctx.next_ty_eff_level(),
+                        ctx.next_ty_eff_level().map_eff(Lvl::deeper),
+                        ctx,
+                    ),
+                });
+
+                let (abs_term, abs, abs_effects_used) =
+                    abs_term.type_check(Some(check_abs), ty_config, ctx)?;
+                let WithInfo(abs_info, abs_term) = *abs_term;
+
+                let ty = abs.apply_eff_arg(abs_info, &effects, ctx)?;
+                (abs_term, ty, abs_effects_used)
             }
             uir::RawTerm::Var(index) => {
                 let ty = ctx.get_var_ty(*index).ok_or_else(|| {
@@ -1006,11 +1025,87 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                 ctx.intern(Type::TyObj(ty.eval(ctx)?)),
                 EffectUses::default(),
             ),
-            uir::RawTerm::Handle(effect) => (
-                tir::RawTerm::Handle { name: todo!() },
-                ctx.intern(todo!()),
-                EffectUses::default(),
-            ),
+            uir::RawTerm::Handle(effect_term) => {
+                let effect = effect_term.eval(ctx)?;
+
+                // `handle effect A -> B`:
+                //
+                // [%E] [R]                           -- eff_var, result_var
+                //   ((A, B -> %{E} R) -> %{E} R)     -- handler_arr
+                //   -> (() -> %{E, effect A -> B} R) -- body
+                //   -> %{E} R
+
+                let eff_var = Effect::Var(ctx.next_eff_var_level(), EffKind::Unbound);
+                let result_var = ctx.intern(Type::TyVar(ctx.next_ty_var_level()));
+                let effect = effect.deepen(
+                    ctx.next_ty_eff_level(),
+                    ctx.next_ty_eff_level()
+                        .map_ty(Lvl::deeper)
+                        .map_eff(Lvl::deeper),
+                    ctx,
+                );
+
+                // we deconstruct `effect` here so that the `eff_*` are deepened
+                let Effect::Def {
+                    name,
+                    arg: eff_arg,
+                    result: eff_result,
+                } = effect.concrete(ctx.next_ty_eff_level(), ctx)?
+                else {
+                    Err(SpannedError::new(
+                        "can only handle custom effects",
+                        "",
+                        "",
+                        effect_term.0,
+                    ))?
+                };
+
+                let continuation = ctx.intern(Type::Arr {
+                    arg: eff_result,
+                    effects: [(None, eff_var)].into_iter().collect(),
+                    result: result_var,
+                });
+                let handler = ctx.intern(Type::Arr {
+                    arg: ctx.intern(Type::Tuple(Box::new([eff_arg, continuation]))),
+                    effects: [(None, eff_var)].into_iter().collect(),
+                    result: result_var,
+                });
+
+                let body = ctx.intern(Type::Arr {
+                    arg: ctx.intern(Type::Tuple(Box::new([]))),
+                    effects: [(None, eff_var), (None, effect)].into_iter().collect(),
+                    result: result_var,
+                });
+
+                let create_handler = ctx.intern(Type::Arr {
+                    arg: handler,
+                    effects: EffectGroup::default(),
+                    result: ctx.intern(Type::Arr {
+                        arg: body,
+                        effects: [(None, eff_var)].into_iter().collect(),
+                        result: result_var,
+                    }),
+                });
+
+                (
+                    tir::RawTerm::Handle {
+                        // TODO
+                        name: Label(name.0.to_string().leak()),
+                    },
+                    ctx.intern(Type::EffAbs {
+                        name: Label("E"),
+                        result: ctx.intern(Type::TyAbs {
+                            name: "R",
+                            bounds: TyBounds {
+                                upper: None,
+                                lower: None,
+                            },
+                            result: create_handler,
+                        }),
+                    }),
+                    EffectUses::default(),
+                )
+            }
             uir::RawTerm::Trigger(effect_term) => {
                 let effect = effect_term.eval(ctx)?;
 
@@ -1028,7 +1123,10 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     ),
                     Effect::Var(level, eff_kind) => match ctx.get_eff_var_unwrap(level)?.1 {
                         EffVar::Unbound => Err(SpannedError::new(
-                            format!("cannot trigger unbound effect: {}", eff_kind.to_id(level)),
+                            format!(
+                                "cannot trigger unbound effect: {}",
+                                eff_kind.to_id(level).display(ctx)?
+                            ),
                             "",
                             "this effect here",
                             effect_term.0,
@@ -1083,8 +1181,8 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         expect_type(check_rec, rec, true, ty_config.infer_ty_args(false), ctx)
                             .try_wrap_error(|| {
                                 Ok(SpannedError::ty_ty_mismatch(
-                                    Type::arr(&Type::Unknown, check_rec).display(ctx)?,
-                                    Type::arr(&Type::Unknown, rec).display(ctx)?,
+                                    Type::arr(None, Some(check_rec)).display(ctx)?,
+                                    Type::arr(None, Some(rec)).display(ctx)?,
                                     *info,
                                 ))
                             })?,
@@ -1122,9 +1220,8 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         )
                         .try_wrap_error(|| {
                             Ok(SpannedError::ty_ty_mismatch(
-                                Type::arr(check_arg, check_rec.unwrap_or(ctx.ty_unknown()))
-                                    .display(ctx)?,
-                                Type::arr(unfolded_rec, rec).display(ctx)?,
+                                Type::arr(Some(check_arg), check_rec).display(ctx)?,
+                                Type::arr(Some(unfolded_rec), Some(rec)).display(ctx)?,
                                 *info,
                             ))
                         })?
@@ -1134,7 +1231,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
 
                     (
                         tir::RawTerm::Identity,
-                        ctx.intern(Type::arr(arg, rec)),
+                        ctx.intern(Type::pure_arr(arg, rec)),
                         EffectUses::default(),
                     )
                 } else if ty_config.ty_infer_fail {
@@ -1176,8 +1273,8 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         expect_type(check_rec, rec, false, ty_config.infer_ty_args(false), ctx)
                             .try_wrap_error(|| {
                                 Ok(SpannedError::ty_ty_mismatch(
-                                    Type::arr(check_rec, &Type::Unknown).display(ctx)?,
-                                    Type::arr(rec, &Type::Unknown).display(ctx)?,
+                                    Type::arr(Some(check_rec), None).display(ctx)?,
+                                    Type::arr(Some(rec), None).display(ctx)?,
                                     *info,
                                 ))
                             })?,
@@ -1212,9 +1309,8 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         )
                         .try_wrap_error(|| {
                             Ok(SpannedError::ty_ty_mismatch(
-                                Type::arr(check_rec.unwrap_or(ctx.ty_unknown()), check_result)
-                                    .display(ctx)?,
-                                Type::arr(rec, unfolded_rec).display(ctx)?,
+                                Type::arr(check_rec, Some(check_result)).display(ctx)?,
+                                Type::arr(Some(rec), Some(unfolded_rec)).display(ctx)?,
                                 *info,
                             ))
                         })?
@@ -1224,7 +1320,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
 
                     (
                         tir::RawTerm::Identity,
-                        ctx.intern(Type::arr(rec, result)),
+                        ctx.intern(Type::pure_arr(rec, result)),
                         EffectUses::default(),
                     )
                 } else if ty_config.ty_infer_fail {
@@ -1266,8 +1362,8 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         expect_type(check_arg, arg, false, ty_config.infer_ty_args(false), ctx)
                             .try_wrap_error(|| {
                                 Ok(SpannedError::ty_ty_mismatch(
-                                    Type::arr(check_arg, &Type::Unknown).display(ctx)?,
-                                    Type::arr(arg, &Type::Unknown).display(ctx)?,
+                                    Type::arr(Some(check_arg), None).display(ctx)?,
+                                    Type::arr(Some(arg), None).display(ctx)?,
                                     *info,
                                 ))
                             })?,
@@ -1279,8 +1375,8 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                 if let Some(check_enum) = check_enum {
                     let result_err = |variant| -> Result<_, TypeCheckError> {
                         Ok(SpannedError::ty_ty_mismatch(
-                            Type::arr(&Type::Unknown, check_enum).display(ctx)?,
-                            Type::arr(
+                            Type::arr(None, Some(check_enum)).display(ctx)?,
+                            Type::pure_arr(
                                 &Type::Unknown,
                                 ctx.intern(Type::Enum(once((*label, variant)).collect())),
                             )
@@ -1317,14 +1413,14 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
 
                     (
                         tir::RawTerm::Enum(*label),
-                        ctx.intern(Type::arr(arg, result)),
+                        ctx.intern(Type::pure_arr(arg, result)),
                         EffectUses::default(),
                     )
                 } else if let Some(arg) = arg {
                     let result = ctx.intern(Type::Enum(once((*label, arg)).collect()));
                     (
                         tir::RawTerm::Enum(*label),
-                        ctx.intern(Type::arr(arg, result)),
+                        ctx.intern(Type::pure_arr(arg, result)),
                         EffectUses::default(),
                     )
                 } else if ty_config.ty_infer_fail {
@@ -1364,8 +1460,8 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                             )
                             .try_wrap_error(|| {
                                 Ok(SpannedError::ty_ty_mismatch(
-                                    Type::arr(check_arg, &Type::Unknown).display(ctx)?,
-                                    Type::arr(enum_type, &Type::Unknown).display(ctx)?,
+                                    Type::arr(Some(check_arg), None).display(ctx)?,
+                                    Type::arr(Some(enum_type), None).display(ctx)?,
                                     *info,
                                 ))
                             })?;
@@ -1432,7 +1528,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                             } = func
                             else {
                                 Err(SpannedError::ty_ty_mismatch(
-                                    Type::arr(variant, &Type::Unknown).display(ctx)?,
+                                    Type::arr(Some(variant), None).display(ctx)?,
                                     func.display(ctx)?,
                                     func_term.0,
                                 ))?
@@ -1511,10 +1607,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         .iter()
                         .map(|(label, func_term)| -> Result<_, TypeCheckError> {
                             let (func_term, func, effects_used) = func_term.type_check(
-                                Some(ctx.intern(Type::arr(
-                                    ctx.ty_unknown(),
-                                    check_result.unwrap_or(ctx.ty_unknown()),
-                                ))),
+                                Some(ctx.intern(Type::arr(None, check_result))),
                                 ty_config.infer_ty_args(true),
                                 ctx,
                             )?;
@@ -1526,7 +1619,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                             } = func
                             else {
                                 Err(SpannedError::ty_ty_mismatch(
-                                    Type::arr(&Type::Unknown, &Type::Unknown).display(ctx)?,
+                                    Type::arr(None, None).display(ctx)?,
                                     func.display(ctx)?,
                                     func_term.0,
                                 ))?
@@ -1672,6 +1765,9 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
     }
 }
 
+// Checks that the `effects_used` can be captured by an abstraction with `declared_effects`, with
+// optional `check_effects` from a `check_type`.
+// Returns the final effects of the function (should be a subtype of the `check_effects`)
 fn check_declared_effects<'i: 'a, 'a>(
     declared_effects: EffectGroup<'a>,
     effects_used: EffectUses<'i, 'a>,
@@ -1794,7 +1890,7 @@ fn check_declared_effects<'i: 'a, 'a>(
                         return Ok(None);
                     }
                     _ => Err(SpannedError::with_context(
-                        format!("'{name}' effect usage is ambiguous"),
+                        format!("'{}' effect usage is ambiguous", name.display(ctx)?),
                         format!(
                             "ambiguous between labels:\n{}",
                             all_fallback_effects
@@ -1821,7 +1917,7 @@ fn check_declared_effects<'i: 'a, 'a>(
                         .map(|(l, e)| e.display(ctx).map(|e| format!("\n  '{l}': {e}")))
                         .try_collect()?;
                     Err(SpannedError::with_context(
-                        format!("unexpected '{name}' effect"),
+                        format!("unexpected '{}' effect", name.display(ctx)?),
                         if possible_effects.is_empty() {
                             "".to_string()
                         } else {
@@ -1839,7 +1935,8 @@ fn check_declared_effects<'i: 'a, 'a>(
                     Ok(SpannedError::with_context(
                         format!(
                             "failed to join incompatible \
-                            '{name}' effects"
+                            '{}' effects",
+                            name.display(ctx)?
                         ),
                         "",
                         "in the body of this abstraction",
@@ -1865,7 +1962,7 @@ fn check_declared_effects<'i: 'a, 'a>(
     Ok::<_, TypeCheckError>(EffectGroup {
         labelled: labelled_effects,
         anonymous: anonymous_effects,
-        exhaustive: false,
+        ..Default::default()
     })
 }
 

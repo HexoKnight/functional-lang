@@ -891,10 +891,7 @@ fn effect_abstraction() {
         )",
         "! -> ()",
     );
-}
 
-#[test]
-fn test() {
     evaluate_check_type(
         r"\x:!
         x.\handler: [E] [R] [%E] (() -> %{E, effect err E -> !} R) -> %{E} R
@@ -904,9 +901,94 @@ fn test() {
             handler \():() %{effect err bool -> !}
             handler \():() %{effect err () -> !}
             (
-                throw (),
+                throw ()
             )
-        )",
+        ) .\x:! ()",
         "! -> ()",
+    );
+}
+
+#[test]
+fn effect_application() {
+    evaluate_check_type(
+        r"\f: [%E] () -> %{E} ()
+        f [%]",
+        "([%E] () -> %{E} ()) -> () -> ()",
+    );
+    evaluate_check_type(
+        r"\f: [%E] () -> %{E} ()
+        f [%effect e () -> ()]",
+        "([%E] () -> %{E} ()) -> () -> %{effect e () -> ()} ()",
+    );
+    evaluate_check_type(
+        r"\f: [%E] [%F] () -> %{E, F} ()
+        f [%]",
+        "([%E] [%F] () -> %{E, F} ()) -> [%F] () -> %{F} ()",
+    );
+
+    // effect inference technicality
+    type_check_failure(
+        r"\f: [%E] [%F] () -> %{E, F} ()
+            (f [%]) .\x: [%F] () -> %{F} ()
+            ()
+        ",
+    );
+}
+
+#[test]
+fn effect_handling() {
+    evaluate_check_type(
+        r"?A ?B handle effect e A -> B",
+        "[A] [B] [%E] [R] ((A, B -> %{E} R) -> %{E} R) -> (() -> %{effect e A -> B, E} R) -> %{E} R",
+    );
+
+    // TODO remove \():()
+    // effect inference technicality requires `[%]`
+    // type inference limitation requires annotating \((), f)
+    evaluate_check_type(
+        r"\():()
+        (handle effect e () -> ()) [%]
+            (\((), f): ((), () -> ()) f ()) \():()
+            trigger effect e () -> () ()
+        ",
+        "() -> ()",
+    );
+
+    evaluate_check_type(
+        r"?%E ?R \f: () -> %{E, effect fail () -> !} R
+            ((handle effect fail () -> !) [%E]) .\h h
+                (\((), f): ((), _) enum none ())
+                \():()
+                    enum: R some (f ())
+        ",
+        "[%E] [R] (() -> %{effect fail () -> !, E} R) -> %{E} enum {none: (), some: R}",
+    );
+    evaluate_check_type(
+        r"(?%E ?R \f: () -> %{E, effect fail () -> !} R
+            ((handle effect fail () -> !) [%E]) .\h h
+                (\((), f): ((), _) enum none ())
+                \():()
+                    enum: R some (f ())
+        ) .\try
+
+        // TODO: remove
+        \():()
+        (
+            try \():()
+            trigger effect fail () -> ! ()
+        ) .\x: enum {none: (), some: !}
+        (
+            try \():()
+            try \():()
+            trigger effect fail () -> ! ()
+        ) .\x: enum {none: (), some: enum {none: (), some: !}}
+        (
+            try \():() %{first: effect fail () -> !}
+            try \():()
+            trigger effect fail () -> ! %{first} ()
+        ) .\x: enum {none: (), some: enum {none: (), some: !}}
+            ()
+        ",
+        "() -> ()",
     );
 }
