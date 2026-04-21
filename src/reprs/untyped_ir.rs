@@ -61,7 +61,7 @@ pub enum RawTerm<'i> {
     Unfold(Option<Type<'i>>),
 
     Enum(Option<Type<'i>>, Label<'i>),
-    Match(Option<Type<'i>>, HashMap<Label<'i>, Term<'i>>),
+    Match(Option<Type<'i>>, Box<[(Label<'i>, Term<'i>)]>),
 
     Record(Box<[(Label<'i>, Term<'i>)]>),
 

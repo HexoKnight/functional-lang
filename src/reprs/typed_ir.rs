@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::{
     common::WithInfo,
     importing::ImportId,
@@ -34,7 +32,7 @@ pub enum RawTerm<'i> {
     Identity,
 
     Enum(Label<'i>),
-    Match(HashMap<Label<'i>, Term<'i>>),
+    Match(Box<[(Label<'i>, Term<'i>)]>),
 
     Record(Box<[(Label<'i>, Term<'i>)]>),
     Tuple(Box<[Term<'i>]>),

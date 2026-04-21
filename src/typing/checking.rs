@@ -1490,7 +1490,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     };
 
                     let (arms, effects, results, effects_used): (
-                        HashMap<_, _>,
+                        Vec<(_, _)>,
                         Vec<_>,
                         Vec<_>,
                         Vec<_>,
@@ -1561,7 +1561,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         .try_collect()?;
 
                     variants.0.iter().try_for_each(|(label, _)| {
-                        if arms.contains_key(label) {
+                        if arms.iter().find(|(l, _)| l == label).is_some() {
                             Ok(())
                         } else {
                             Err(SpannedError::new(
@@ -1573,7 +1573,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         }
                     })?;
                     (
-                        tir::RawTerm::Match(arms),
+                        tir::RawTerm::Match(arms.into_boxed_slice()),
                         ctx.intern(Type::Arr {
                             arg: enum_type,
                             // TODO: check effects
@@ -1598,7 +1598,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                     )
                 } else {
                     let (arms, variants, effects, results, effects_used): (
-                        HashMap<_, _>,
+                        Vec<(_, _)>,
                         _,
                         Vec<_>,
                         Vec<_>,
@@ -1637,7 +1637,7 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                         .filter_map_ok(|o| o)
                         .try_collect()?;
                     (
-                        tir::RawTerm::Match(arms),
+                        tir::RawTerm::Match(arms.into_boxed_slice()),
                         ctx.intern(Type::Arr {
                             arg: ctx.intern(Type::Enum(variants)),
                             // TODO: check effects
