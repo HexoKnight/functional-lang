@@ -12,7 +12,7 @@ use crate::{
     importing::ImportId,
     reprs::{
         common::{Label, Lvl, Span},
-        typed_ir::{self as tir},
+        typed_ir::{self as tir, EffectId},
         untyped_ir as uir,
     },
     typing::{
@@ -1088,10 +1088,8 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
                 });
 
                 (
-                    tir::RawTerm::Handle {
-                        // TODO
-                        name: Label(name.0.to_string().leak()),
-                    },
+                    // TODO
+                    tir::RawTerm::Handle(EffectId::Def(Label(name.0.to_string().leak()))),
                     ctx.intern(Type::EffAbs {
                         name: Label("E"),
                         result: ctx.intern(Type::TyAbs {
@@ -1111,10 +1109,8 @@ impl<'i: 'a, 'a, 'inn> TypeCheck<'i, 'a, 'inn> for uir::Term<'i> {
 
                 let (term, ty) = match effect.concrete(ctx.next_ty_eff_level(), ctx)? {
                     Effect::Def { name, arg, result } => (
-                        tir::RawTerm::Trigger {
-                            // TODO
-                            name: Label(name.0.to_string().leak()),
-                        },
+                        // TODO
+                        tir::RawTerm::Trigger(EffectId::Def(Label(name.0.to_string().leak()))),
                         Type::Arr {
                             arg,
                             effects: [(None, effect)].into_iter().collect(),

@@ -1,29 +1,31 @@
-use std::{borrow::Borrow, collections::HashMap};
+use std::{borrow::Borrow, collections::HashMap, rc::Rc};
 
-use itertools::{Itertools, zip_eq};
-use typed_arena::Arena;
+use itertools::{Either, zip_eq};
 
 use crate::{
     common::WithInfo,
-    evaluation::context::ContextInner,
+    evaluation::evalstack::EvalNode,
     importing::ImportId,
     reprs::{
-        common::{ArgTermStructure, RawArgStructure, RawArgTermStructure},
+        common::{ArgTermStructure, Lvl, RawArgStructure, RawArgTermStructure},
         typed_ir::{RawTerm, Term},
         value::{self, Closure, Func, RawValue},
     },
 };
 
-use self::context::Context;
-pub use self::context::ContextClosure;
+use self::context::State;
+pub use self::context::VarClosure;
 pub use self::error::EvaluationError;
 
+mod evalstack;
+
 mod context {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, rc::Rc};
 
-    use typed_arena::Arena;
-
-    use crate::{importing::ImportId, reprs::common::Idx};
+    use crate::{
+        evaluation::EvaluationError,
+        reprs::common::{Idx, Lvl},
+    };
 
     use super::Value;
 
@@ -37,74 +39,44 @@ mod context {
     type Stack<T> = Vec<T>;
 
     #[derive(Clone, Debug)]
-    pub struct ContextClosure<'i, 'ir, 'a> {
-        var_stack: Stack<&'a Value<'i, 'ir, 'a>>,
-    }
-
-    pub(super) struct ContextInner<'i, 'ir, 'a> {
-        var_arena: &'a Arena<Value<'i, 'ir, 'a>>,
-    }
-
-    impl<'i, 'ir, 'a> ContextInner<'i, 'ir, 'a> {
-        pub(super) fn new(arena: &'a Arena<Value<'i, 'ir, 'a>>) -> Self {
-            Self { var_arena: arena }
-        }
-
-        pub(super) fn alloc(&self, value: Value<'i, 'ir, 'a>) -> &'a Value<'i, 'ir, 'a> {
-            self.var_arena.alloc(value)
-        }
+    pub struct VarClosure<'i, 'ir> {
+        var_stack: Stack<Rc<Value<'i, 'ir>>>,
     }
 
     #[must_use]
     #[derive(Clone)]
-    pub(super) struct Context<'i, 'ir, 'a, 'inn> {
-        inner: &'inn ContextInner<'i, 'ir, 'a>,
-        imports: &'inn HashMap<ImportId, &'a Value<'i, 'ir, 'a>>,
-
-        var_stack: Stack<&'a Value<'i, 'ir, 'a>>,
+    pub(super) struct State<'i, 'ir> {
+        var_stack: Stack<Rc<Value<'i, 'ir>>>,
     }
 
-    impl<'i, 'ir, 'a, 'inn> Context<'i, 'ir, 'a, 'inn> {
-        pub(super) fn new(
-            imports: &'inn HashMap<ImportId, &'a Value<'i, 'ir, 'a>>,
-            inner: &'inn ContextInner<'i, 'ir, 'a>,
-        ) -> Self {
+    impl<'i, 'ir> State<'i, 'ir> {
+        pub(super) fn new() -> Self {
             Self {
-                inner,
-                imports,
                 var_stack: Vec::new(),
             }
         }
 
-        pub(super) fn push_vars(&self, vars: impl IntoIterator<Item = Value<'i, 'ir, 'a>>) -> Self {
-            let mut new = self.clone();
-            new.var_stack
-                .extend(vars.into_iter().map(|v| self.inner.alloc(v)));
-            new
+        pub(super) fn push_vars(&mut self, vars: impl IntoIterator<Item = Value<'i, 'ir>>) {
+            self.var_stack.extend(vars.into_iter().map(Rc::new));
         }
 
-        pub(super) fn get_var(&self, index: Idx) -> Option<&'a Value<'i, 'ir, 'a>> {
-            index.get(&self.var_stack).copied()
-        }
-
-        pub(super) fn get_import(&self, import_id: ImportId) -> Option<&'a Value<'i, 'ir, 'a>> {
-            self.imports.get(&import_id).copied()
+        pub(super) fn get_var(&self, index: Idx) -> Option<&Rc<Value<'i, 'ir>>> {
+            index.get(&self.var_stack)
         }
 
         // TODO: perhaps try to close only over referenced vars
-        pub(super) fn create_closure(&self) -> ContextClosure<'i, 'ir, 'a> {
-            ContextClosure {
+        pub(super) fn create_var_closure(&self) -> VarClosure<'i, 'ir> {
+            VarClosure {
                 var_stack: self.var_stack.clone(),
             }
         }
 
-        pub(super) fn apply_closure(&self, closure: ContextClosure<'i, 'ir, 'a>) -> Self {
-            let ContextClosure { var_stack } = closure;
-            Self {
-                inner: self.inner,
-                imports: self.imports,
-                var_stack,
-            }
+        pub(super) fn swap_var_closure(
+            &mut self,
+            mut closure: VarClosure<'i, 'ir>,
+        ) -> VarClosure<'i, 'ir> {
+            std::mem::swap(&mut self.var_stack, &mut closure.var_stack);
+            closure
         }
     }
 }
@@ -131,7 +103,7 @@ mod error {
     }
 }
 
-type Value<'i, 'ir, 'a> = value::Value<'i, Closure<'i, 'ir, 'a>>;
+type Value<'i, 'ir> = value::Value<'i, Closure<'i, 'ir>>;
 
 /// Takes a [`typed_ir::Term`][tir::Term] and all it's dependencies and evaluates it,
 /// returning the resulting [`Value`][value::Value].
@@ -147,161 +119,242 @@ where
 {
     let typed_ir = typed_ir.borrow();
 
-    let arena = Arena::new();
-    let inner = ContextInner::new(&arena);
-
     let imports =
         imports
             .into_iter()
             .try_fold(HashMap::new(), |mut imports, (import_id, term)| {
-                let value = term.evaluate(&Context::new(&imports, &inner))?;
-                imports.insert(import_id, inner.alloc(value));
+                let value = evaluate_loop(term, &imports)?;
+                imports.insert(import_id, Rc::new(value));
                 Ok(imports)
             })?;
-    let value = typed_ir.evaluate(&Context::new(&imports, &inner))?;
+    let value = evaluate_loop(typed_ir, &imports)?;
     Ok(value.map_closure(|_| ()))
 }
 
-trait Evaluate<'i, 'ir, 'a> {
-    type Evaluated;
-    fn evaluate(
-        &'ir self,
-        ctx: &Context<'i, 'ir, 'a, '_>,
-    ) -> Result<Self::Evaluated, EvaluationError>;
-}
+fn evaluate_loop<'i, 'ir>(
+    root_term: &'ir Term<'i>,
+    imports: &HashMap<ImportId, Rc<Value<'i, 'ir>>>,
+) -> Result<Value<'i, 'ir>, EvaluationError> {
+    let mut eval_stack = Vec::new();
 
-impl<'i: 'ir, 'ir: 'a, 'a> Evaluate<'i, 'ir, 'a> for Term<'i> {
-    type Evaluated = Value<'i, 'ir, 'a>;
+    let mut state = State::new();
 
-    fn evaluate(
-        &'ir self,
-        ctx: &Context<'i, 'ir, 'a, '_>,
-    ) -> Result<Self::Evaluated, EvaluationError> {
-        let WithInfo(info, term) = self;
+    enum Transition<'i, 'ir> {
+        EvalTerm(&'ir Term<'i>),
+        ReturnValue(Value<'i, 'ir>),
+    }
 
-        let value = match term {
-            // we cannot evaluate a solitary abstraction any further so we treat it like a closure
-            RawTerm::Abs {
-                arg_structure,
-                body,
-            } => RawValue::Func(Func::Abs(
-                arg_structure.clone(),
-                value::Closure {
-                    closed_ctx: ctx.create_closure(),
-                    body: body.as_ref(),
-                },
-            )),
-            RawTerm::App { func, arg } => {
-                let RawValue::Func(func) = func.evaluate(ctx)?.1 else {
-                    return Err(EvaluationError::Illegal(
-                        "type checking failed: application on non-function".to_string(),
-                    ));
+    let mut transition = Transition::EvalTerm(root_term);
+    loop {
+        transition = match transition {
+            Transition::EvalTerm(WithInfo(span, raw_term)) => 'transition: {
+                let value = match raw_term {
+                    RawTerm::Abs {
+                        arg_structure,
+                        body,
+                    } => RawValue::Func(Func::Abs(
+                        arg_structure.clone(),
+                        value::Closure {
+                            closure: state.create_var_closure(),
+                            body: body.as_ref(),
+                        },
+                    )),
+                    RawTerm::App { func, arg } => {
+                        eval_stack.push(Rc::new(EvalNode::App(*span, Either::Left(arg))));
+                        break 'transition Transition::EvalTerm(func);
+                    }
+                    RawTerm::Var(index) => state
+                        .get_var(*index)
+                        .ok_or_else(|| {
+                            EvaluationError::Illegal(format!(
+                                "variable index not found: {index:?}\n"
+                            ))
+                        })?
+                        .as_ref()
+                        .1
+                        // TODO: maybe try eliminate this clone??
+                        .clone(),
+                    RawTerm::Handle(effect_id) => RawValue::Func(Func::HandlerFunc(*effect_id)),
+                    RawTerm::Trigger(effect_id) => RawValue::Func(Func::Trigger(*effect_id)),
+                    RawTerm::Import(import_id) => imports
+                        .get(import_id)
+                        .ok_or_else(|| {
+                            EvaluationError::Illegal(format!("import id not found: {import_id:?}"))
+                        })?
+                        .as_ref()
+                        .1
+                        // TODO: maybe try eliminate this clone??
+                        .clone(),
+                    RawTerm::Identity => RawValue::Func(Func::Identity),
+                    RawTerm::Enum(label) => RawValue::Func(Func::EnumCons(*label)),
+                    RawTerm::Match(arms) => {
+                        if let Some((first_label, first_term)) = arms.first() {
+                            eval_stack.push(Rc::new(EvalNode::Match(
+                                *span,
+                                HashMap::with_capacity(arms.len()),
+                                *first_label,
+                                arms,
+                            )));
+                            break 'transition Transition::EvalTerm(first_term);
+                        } else {
+                            RawValue::Record(HashMap::new())
+                        }
+                    }
+                    RawTerm::Record(fields) => {
+                        if let Some((first_label, first)) = fields.first() {
+                            eval_stack.push(Rc::new(EvalNode::Record(
+                                *span,
+                                HashMap::with_capacity(fields.len()),
+                                *first_label,
+                                fields,
+                            )));
+                            break 'transition Transition::EvalTerm(first);
+                        } else {
+                            RawValue::Record(HashMap::new())
+                        }
+                    }
+                    RawTerm::Tuple(elems) => {
+                        if let Some(first) = elems.first() {
+                            eval_stack.push(Rc::new(EvalNode::Tuple(
+                                *span,
+                                Vec::with_capacity(elems.len()),
+                                elems,
+                            )));
+                            break 'transition Transition::EvalTerm(first);
+                        } else {
+                            RawValue::Tuple(Box::new([]))
+                        }
+                    }
+                    RawTerm::Bool(b) => RawValue::Bool(*b),
+                };
+                Transition::ReturnValue(WithInfo(*span, value))
+            }
+            Transition::ReturnValue(value) => {
+                let Some(top) = eval_stack.pop() else {
+                    break Ok(value);
                 };
 
-                let arg = arg.evaluate(ctx)?;
-                func.evaluate_arg(arg, ctx)?
-            }
-            RawTerm::Var(index) => ctx
-                .get_var(*index)
-                .ok_or_else(|| {
-                    EvaluationError::Illegal(format!("variable index not found: {index:?}\n"))
-                })?
-                .1
-                // TODO: maybe try eliminate this clone??
-                .clone(),
-            // TODO
-            RawTerm::Handle { name } => RawValue::Func(Func::Identity),
-            RawTerm::Trigger { name } => RawValue::Func(Func::Identity),
-            RawTerm::Import(import_id) => ctx
-                .get_import(*import_id)
-                .ok_or_else(|| {
-                    EvaluationError::Illegal(format!("import id not found: {import_id:?}"))
-                })?
-                .1
-                // TODO: maybe try eliminate this clone??
-                .clone(),
-            RawTerm::Identity => RawValue::Func(Func::Identity),
-            RawTerm::Enum(label) => RawValue::Func(Func::EnumCons(*label)),
-            RawTerm::Match(arms) => RawValue::Func(Func::Match(
-                arms.iter()
-                    .map(|(l, body)| {
-                        (
-                            *l,
-                            value::Closure {
-                                closed_ctx: ctx.create_closure(),
-                                body,
-                            },
-                        )
-                    })
-                    .collect(),
-            )),
-            RawTerm::Record(fields) => RawValue::Record(
-                fields
-                    .iter()
-                    .map(|(l, f)| f.evaluate(ctx).map(|f| (*l, f)))
-                    .try_collect()?,
-            ),
-            RawTerm::Tuple(elems) => {
-                RawValue::Tuple(elems.iter().map(|e| e.evaluate(ctx)).try_collect()?)
-            }
-            RawTerm::Bool(b) => RawValue::Bool(*b),
-        };
+                let top_node = Rc::unwrap_or_clone(top);
 
-        Ok(WithInfo(*info, value))
+                match top_node {
+                    EvalNode::App(span, Either::Left(arg)) => {
+                        let RawValue::Func(func) = value.1 else {
+                            Err(EvaluationError::Illegal(
+                                "type checking failed: application on non-function".to_string(),
+                            ))?
+                        };
+
+                        eval_stack.push(Rc::new(EvalNode::App(span, Either::Right(func))));
+                        Transition::EvalTerm(arg)
+                    }
+                    EvalNode::App(span, Either::Right(func)) => {
+                        let arg = value;
+                        match func {
+                            Func::Abs(arg_structure, Closure { closure, body }) => {
+                                let args = arg.destructure(arg_structure)?;
+
+                                let prev_var_closure = state.swap_var_closure(closure);
+                                state.push_vars(args);
+
+                                eval_stack.push(Rc::new(EvalNode::AppAbs(prev_var_closure)));
+                                Transition::EvalTerm(body)
+                            }
+                            Func::Identity => Transition::ReturnValue(arg),
+                            Func::EnumCons(label) => Transition::ReturnValue(WithInfo(
+                                span,
+                                RawValue::EnumVariant(label, Box::new(arg)),
+                            )),
+                            Func::Match(mut arms) => {
+                                let WithInfo(_span, raw_arg) = arg;
+                                let RawValue::EnumVariant(label, value) = raw_arg else {
+                                    Err(EvaluationError::Illegal(
+                                        "type checking failed: match on non-enum".to_string(),
+                                    ))?
+                                };
+                                let Some(func) = arms.remove(&label) else {
+                                    Err(EvaluationError::Illegal(
+                                        "type checking failed: match missing enum label"
+                                            .to_string(),
+                                    ))?
+                                };
+
+                                // essentially just rerun this match with a different `func`
+                                eval_stack.push(Rc::new(EvalNode::App(span, Either::Right(func))));
+                                Transition::ReturnValue(*value)
+                            }
+                            Func::HandlerFunc(label) => todo!(),
+                            Func::Handler(effect_id, func) => todo!(),
+                            Func::Continuation() => todo!(),
+                            Func::Trigger(effect_id) => todo!(),
+                        }
+                    }
+                    EvalNode::AppAbs(closure) => {
+                        state.swap_var_closure(closure);
+                        Transition::ReturnValue(value)
+                    }
+                    EvalNode::Match(span, mut evaled, label, arms) => {
+                        let RawValue::Func(func) = value.1 else {
+                            return Err(EvaluationError::Illegal(
+                                "type checking failed: match arm is non-function".to_string(),
+                            ));
+                        };
+                        evaled.insert(label, func);
+                        if let Some((next_label, next_term)) = arms.get(evaled.len()) {
+                            eval_stack.push(Rc::new(EvalNode::Match(
+                                span,
+                                evaled,
+                                *next_label,
+                                arms,
+                            )));
+                            Transition::EvalTerm(next_term)
+                        } else {
+                            Transition::ReturnValue(WithInfo(
+                                span,
+                                RawValue::Func(Func::Match(evaled)),
+                            ))
+                        }
+                    }
+                    EvalNode::Record(span, mut evaled, label, fields) => {
+                        evaled.insert(label, value);
+                        if let Some((next_label, next_term)) = fields.get(evaled.len()) {
+                            eval_stack.push(Rc::new(EvalNode::Record(
+                                span,
+                                evaled,
+                                *next_label,
+                                fields,
+                            )));
+                            Transition::EvalTerm(next_term)
+                        } else {
+                            Transition::ReturnValue(WithInfo(span, RawValue::Record(evaled)))
+                        }
+                    }
+                    EvalNode::Tuple(span, mut evaled, elems) => {
+                        evaled.push(value);
+                        if let Some(next_term) = elems.get(evaled.len()) {
+                            eval_stack.push(Rc::new(EvalNode::Tuple(span, evaled, elems)));
+                            Transition::EvalTerm(next_term)
+                        } else {
+                            Transition::ReturnValue(WithInfo(
+                                span,
+                                RawValue::Tuple(evaled.into_boxed_slice()),
+                            ))
+                        }
+                    }
+                }
+            }
+        };
     }
 }
 
-impl<'i: 'ir, 'ir: 'a, 'a> Func<'i, Closure<'i, 'ir, 'a>> {
-    fn evaluate_arg(
-        self,
-        arg: Value<'i, 'ir, 'a>,
-        ctx: &Context<'i, 'ir, 'a, '_>,
-    ) -> Result<RawValue<'i, Closure<'i, 'ir, 'a>>, EvaluationError> {
-        let value = match self {
-            Func::Abs(arg_structure, value::Closure { closed_ctx, body }) => {
-                let args = arg.destructure(arg_structure)?;
-
-                let ctx_ = ctx.apply_closure(closed_ctx).push_vars(args);
-                body.evaluate(&ctx_)?.1
-            }
-            Func::Identity => arg.1,
-            Func::EnumCons(label) => RawValue::EnumVariant(label, Box::new(arg)),
-            Func::Match(mut arms) => {
-                let WithInfo(_info, arg) = arg;
-                let RawValue::EnumVariant(label, value) = arg else {
-                    return Err(EvaluationError::Illegal(
-                        "type checking failed: match on non-enum".to_string(),
-                    ));
-                };
-                let Some(Closure { closed_ctx, body }) = arms.remove(&label) else {
-                    return Err(EvaluationError::Illegal(
-                        "type checking failed: match missing enum label".to_string(),
-                    ));
-                };
-
-                let ctx_ = ctx.apply_closure(closed_ctx);
-                let func = body.evaluate(&ctx_)?.1;
-                let RawValue::Func(func) = func else {
-                    return Err(EvaluationError::Illegal(
-                        "type checking failed: match arm is non-function".to_string(),
-                    ));
-                };
-                func.evaluate_arg(*value, ctx)?
-            }
-        };
-        Ok(value)
-    }
-}
-
-impl Value<'_, '_, '_> {
+impl Value<'_, '_> {
     fn destructure(
         self,
         arg_structure: ArgTermStructure,
     ) -> Result<impl Iterator<Item = Self>, EvaluationError> {
         fn inner<'i, 'ir, 'a>(
             arg_structure: ArgTermStructure,
-            val: Value<'i, 'ir, 'a>,
-            output: &mut impl FnMut(Value<'i, 'ir, 'a>),
+            val: Value<'i, 'ir>,
+            output: &mut impl FnMut(Value<'i, 'ir>),
         ) -> Result<(), EvaluationError> {
             let WithInfo(info, val) = val;
             let WithInfo(_arg_structure_span, arg_structure) = arg_structure;

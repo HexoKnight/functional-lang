@@ -20,12 +20,8 @@ pub enum RawTerm<'i> {
     Var(Idx),
 
     // TODO
-    Handle {
-        name: Label<'i>,
-    },
-    Trigger {
-        name: Label<'i>,
-    },
+    Handle(EffectId<'i>),
+    Trigger(EffectId<'i>),
 
     Import(ImportId),
 
@@ -38,4 +34,14 @@ pub enum RawTerm<'i> {
     Tuple(Box<[Term<'i>]>),
 
     Bool(bool),
+}
+
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
+pub enum EffectRef<'i> {
+    Labelled(Label<'i>),
+    Anonymous(EffectId<'i>),
+}
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
+pub enum EffectId<'i> {
+    Def(Label<'i>),
 }

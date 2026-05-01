@@ -4,10 +4,10 @@ use derive_where::derive_where;
 
 use crate::{
     common::WithInfo,
-    evaluation::ContextClosure,
+    evaluation::VarClosure,
     reprs::{
         common::{ArgTermStructure, Label, Span},
-        typed_ir,
+        typed_ir::{self, EffectId},
     },
 };
 
@@ -29,14 +29,19 @@ pub enum Func<'i, Closure> {
     Identity,
 
     EnumCons(Label<'i>),
-    Match(HashMap<Label<'i>, Closure>),
+    Match(HashMap<Label<'i>, Func<'i, Closure>>),
+
+    HandlerFunc(EffectId<'i>),
+    Handler(EffectId<'i>, Box<Func<'i, Closure>>),
+    Continuation(),
+    Trigger(EffectId<'i>),
 }
 
 #[derive(Clone)]
 #[derive_where(Debug)]
-pub struct Closure<'i, 'ir, 'a> {
+pub struct Closure<'i, 'ir> {
     #[derive_where(skip)]
-    pub closed_ctx: ContextClosure<'i, 'ir, 'a>,
+    pub closure: VarClosure<'i, 'ir>,
 
     pub body: &'ir typed_ir::Term<'i>,
 }
@@ -76,9 +81,13 @@ impl<'i, Closure> Func<'i, Closure> {
             Func::EnumCons(l) => Func::EnumCons(l),
             Func::Match(arms) => Func::Match(
                 arms.into_iter()
-                    .map(|(l, closure)| (l, map(closure)))
+                    .map(|(l, func)| (l, func.map_closure_rec(map)))
                     .collect(),
             ),
+            Func::HandlerFunc(label) => Func::HandlerFunc(label),
+            Func::Handler(label, func) => Func::Handler(label, Box::new(func.map_closure_rec(map))),
+            Func::Continuation() => Func::Continuation(),
+            Func::Trigger(label) => Func::Trigger(label),
         }
     }
 }
