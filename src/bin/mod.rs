@@ -4,7 +4,7 @@ use clap::{Parser, ValueEnum};
 use clio::Input;
 
 use functional_lang::{
-    error::CompilationError,
+    error::{CompilationError, RenderError},
     importing::{GenericImportHandler, ImportError, ImportHandlerImpl, Importer},
     pipeline::Pipeline,
     reprs::common::FileInfo,
