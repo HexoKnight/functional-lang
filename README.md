@@ -1,15 +1,17 @@
 # Language Overview
 
-Simply typed lambda calculus with some small extensions. Mostly standard syntax. See the [examples](examples).
+A small functional language built up from System F<:. Mostly standard syntax. See the [examples](examples) and [stdlib](stdlib).
 
 ## Language features
 
 - subtyping
-- (impredicative) polymorphism
+- bounded (impredicative) polymorphism
 - local argument type and type argument inference
 - a structural type system
 - enum types
 - tuple types
+- (positive) recursive types
+- algebraic effects
 
 # Design
 
@@ -32,12 +34,8 @@ Type checks the 'untyped IR' to produce a 'typed IR' (typed in the sense that it
 
 ## [Evaluation](src/evaluation)
 
-Evaluates the 'typed IR' in big-step evaluation style to produce a final value.
+Evaluates the 'typed IR' in small-step evaluation style to produce a final value.
 It handles function application by treating all functions as closures, which avoids any kind of substitution that would otherwise complicate things.
-
-# Implementation Details
-
-Lots of temporary values (eg. types during type-checking, values during evaluation) are arena allocated to better work around rust's ownership rules but may be reference counted in the future to allow for memory to be freed immediately.
 
 # Building
 
@@ -56,7 +54,8 @@ funclang --help
 # Running Programs
 
 ```sh
-funclang path/to/source_file evaluate
+funclang evaluate path/to/source_file
 ```
 
-Error handling is hardly implemented so there is no location information attached to errors unfortunately.
+A best attempt at error handling is implemented, with mostly full span information.
+However, deep subtyping and type inference errors can be incredibly cryptic.
